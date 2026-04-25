@@ -100,7 +100,7 @@ pre {
   justify-content: center;
   gap: 0.4rem;
   border: 1px solid transparent;
-  border-radius: 0.7rem;
+  border-radius: 0.32rem;
   color: var(--primary-text);
   box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.04);
   transition:
@@ -119,23 +119,23 @@ pre {
 }
 
 .action-box-cyan {
-  border-color: color-mix(in srgb, var(--accent-cyan) 72%, transparent);
-  background: linear-gradient(180deg, rgba(77, 238, 234, 0.34), rgba(23, 112, 118, 0.78));
+  border-color: color-mix(in srgb, var(--accent-cyan) 68%, transparent);
+  background: linear-gradient(180deg, rgba(48, 131, 137, 0.96), rgba(21, 68, 72, 0.98));
 }
 
 .action-box-gold {
-  border-color: color-mix(in srgb, var(--accent-gold) 74%, transparent);
-  background: linear-gradient(180deg, rgba(253, 249, 196, 0.32), rgba(115, 104, 45, 0.82));
+  border-color: color-mix(in srgb, var(--accent-gold) 68%, transparent);
+  background: linear-gradient(180deg, rgba(134, 120, 52, 0.96), rgba(73, 65, 24, 0.98));
 }
 
 .action-box-magenta {
-  border-color: color-mix(in srgb, var(--accent-magenta) 78%, transparent);
-  background: linear-gradient(180deg, rgba(233, 46, 142, 0.36), rgba(108, 18, 66, 0.84));
+  border-color: color-mix(in srgb, var(--accent-magenta) 72%, transparent);
+  background: linear-gradient(180deg, rgba(132, 28, 81, 0.97), rgba(72, 12, 44, 0.99));
 }
 
 .action-box-ghost {
   border-color: rgba(255, 255, 255, 0.28);
-  background: linear-gradient(180deg, rgba(255, 255, 255, 0.18), rgba(58, 64, 74, 0.78));
+  background: linear-gradient(180deg, rgba(62, 68, 79, 0.95), rgba(26, 30, 39, 0.98));
 }
 
 .intake-spotlight {
