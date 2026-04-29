@@ -1,0 +1,11 @@
+name = "boxai"
+main = ".open-next/worker.js"
+compatibility_date = "2026-04-29"
+compatibility_flags = ["nodejs_compat"]
+
+[assets]
+directory = ".open-next/assets"
+binding = "ASSETS"
+
+[observability.logs]
+enabled = true
