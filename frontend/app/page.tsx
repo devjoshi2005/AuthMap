@@ -12,13 +12,13 @@ export default function Home() {
               <span className="text-[var(--accent-cyan)]">Frontend Overview</span>
             </>
           }
-          title="ExoAI turns agent defense into one clear operating surface."
+          title="BoxAI turns agent defense into one sealed operating surface."
           description={
             <>
               Start with the input that matches your OpenClaw setup, watch the
               security modules unfold in a readable sequence, and move straight
               into <span className="text-[var(--accent-magenta)]">remediation</span>{" "}
-              and report views.
+              and report views before anything leaves the box.
             </>
           }
           aside={

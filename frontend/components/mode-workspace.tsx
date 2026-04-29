@@ -74,7 +74,7 @@ export function ModeWorkspace() {
               Start here
             </p>
             <h2 className="mt-2 text-2xl font-semibold text-white">
-              Wrap your OpenClaw agent in ExoAI protection.
+              Seal your OpenClaw agent inside BoxAI.
             </h2>
           </div>
           <p className="max-w-md text-sm leading-6 text-slate-300">

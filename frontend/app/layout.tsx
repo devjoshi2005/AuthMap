@@ -13,9 +13,9 @@ const geistMono = Geist_Mono({
 });
 
 export const metadata: Metadata = {
-  title: "ExoAI",
+  title: "BoxAI",
   description:
-    "ExoAI protects OpenClaw-based agents with scan setup, security modules, remediation, and report views.",
+    "BoxAI seals OpenClaw-based agents inside a controllable boundary with scan setup, security modules, remediation, and report views.",
   icons: {
     icon: "/next.png",
   },

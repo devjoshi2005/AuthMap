@@ -17,25 +17,25 @@ export function AppShell({ children }: AppShellProps) {
             <div className="mt-2">
               <Image
                 src="/image.svg"
-                alt="ExoAI logo"
-                width={430}
-                height={124}
+                alt="BoxAI logo"
+                width={567}
+                height={258}
                 priority
-                className="-ml-4 h-auto w-[290px] sm:-ml-6 sm:w-[350px] lg:-ml-8 lg:w-[430px] drop-shadow-[0_16px_38px_rgba(77,238,234,0.08)]"
+                className="-ml-8 h-auto w-[350px] sm:-ml-10 sm:w-[430px] lg:-ml-12 lg:w-[505px] drop-shadow-[0_16px_38px_rgba(62,233,233,0.07)]"
               />
             </div>
-            <p className="mt-0 text-[1.55rem] font-black uppercase tracking-[0.18em] text-white [text-shadow:0_0_10px_rgba(255,255,255,0.62),0_0_26px_rgba(255,255,255,0.18)] sm:text-[1.9rem] lg:text-[2.4rem]">
+            <p className="mt-[-0.35rem] text-[1.55rem] font-black uppercase tracking-[0.18em] text-white [text-shadow:0_0_10px_rgba(255,255,255,0.62),0_0_26px_rgba(255,255,255,0.18)] sm:text-[1.9rem] lg:text-[2.4rem]">
               AI AGENT SECURITY SCANNER
             </p>
             <p className="mt-2 max-w-[39rem] text-base leading-7 text-slate-300 sm:text-lg">
-              OpenClaw powers the agent. ExoAI adds the <span className="text-[var(--accent-gold)] uppercase">exoskeleton</span> around it,
-              so teams can inspect risk, harden behavior, and review findings in
+              OpenClaw powers the agent. BoxAI seals it inside a <span className="text-[var(--accent-gold)] uppercase">containment boundary</span>,
+              so teams can isolate risky behavior, inspect exposure, and ship with
               one controlled workflow.
             </p>
             <div className="mt-5 flex flex-wrap gap-x-6 gap-y-2 text-xs font-bold uppercase tracking-[0.24em] text-white">
-              <span>Signal visibility</span>
+              <span>Threat containment</span>
               <span>Fast risk triage</span>
-              <span>Guided hardening</span>
+              <span>Controlled release</span>
             </div>
           </Link>
           <TopNav />
