@@ -1,5 +1,5 @@
-app = "boxai-frontend"
-primary_region = "iad"
+app = "boxai"
+primary_region = "bom"
 
 [build]
   dockerfile = "Dockerfile"
