@@ -1,7 +1,8 @@
 "use client";
 
+import { useUser } from "@clerk/nextjs";
 import Link from "next/link";
-import { useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 
 import { moduleLabels, scanModes, type ModeId } from "@/lib/demo-data";
 
@@ -13,6 +14,7 @@ function createInitialDrafts() {
 }
 
 export function ModeWorkspace() {
+  const { user } = useUser();
   const [selectedModeId, setSelectedModeId] = useState<ModeId>(scanModes[0].id);
   const [drafts, setDrafts] = useState<Record<ModeId, string>>(createInitialDrafts);
   const [fileNames, setFileNames] = useState<Record<ModeId, string>>({
@@ -20,12 +22,65 @@ export function ModeWorkspace() {
     endpoint: "",
     code: "",
   });
+  const [hasLoadedPersistedState, setHasLoadedPersistedState] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
+
+  const storageKey = user ? `boxai:workspace:${user.id}` : null;
 
   const selectedMode =
     scanModes.find((mode) => mode.id === selectedModeId) ?? scanModes[0];
   const currentInput = drafts[selectedMode.id];
   const hasInput = currentInput.trim().length > 0;
+
+  useEffect(() => {
+    if (!storageKey) {
+      setHasLoadedPersistedState(true);
+      return;
+    }
+
+    try {
+      const savedState = window.localStorage.getItem(storageKey);
+
+      if (savedState) {
+        const parsedState = JSON.parse(savedState) as {
+          selectedModeId?: ModeId;
+          drafts?: Record<ModeId, string>;
+          fileNames?: Record<ModeId, string>;
+        };
+
+        if (parsedState.selectedModeId && scanModes.some((mode) => mode.id === parsedState.selectedModeId)) {
+          setSelectedModeId(parsedState.selectedModeId);
+        }
+
+        if (parsedState.drafts) {
+          setDrafts((current) => ({ ...current, ...parsedState.drafts }));
+        }
+
+        if (parsedState.fileNames) {
+          setFileNames((current) => ({ ...current, ...parsedState.fileNames }));
+        }
+      }
+    } catch (error) {
+      console.error(error);
+    } finally {
+      setHasLoadedPersistedState(true);
+    }
+  }, [storageKey]);
+
+  useEffect(() => {
+    if (!storageKey || !hasLoadedPersistedState) {
+      return;
+    }
+
+    window.localStorage.setItem(
+      storageKey,
+      JSON.stringify({
+        selectedModeId,
+        drafts,
+        fileNames,
+      }),
+    );
+  }, [drafts, fileNames, hasLoadedPersistedState, selectedModeId, storageKey]);
 
   function updateDraft(nextValue: string) {
     setDrafts((current) => ({
@@ -67,13 +122,13 @@ export function ModeWorkspace() {
 
   return (
     <section id="intake-workspace" className="mt-8 grid gap-6 xl:grid-cols-[1.1fr_0.9fr] scroll-mt-24">
-      <div className="intake-hero space-y-6 rounded-[2rem] border border-white/10 bg-white/[0.03] p-6 shadow-[0_18px_50px_rgba(0,0,0,0.3)]">
+      <div className="intake-hero space-y-6 rounded-[2.2rem] border border-white/10 bg-[linear-gradient(180deg,rgba(255,255,255,0.05),rgba(255,255,255,0.02))] p-6 shadow-[0_20px_54px_rgba(0,0,0,0.18)]">
         <div className="flex flex-col gap-4 md:flex-row md:items-center md:justify-between">
           <div>
-            <p className="text-sm font-semibold uppercase tracking-[0.24em] text-slate-400">
+            <p className="font-[family:var(--font-plex-mono)] text-[0.72rem] font-medium uppercase tracking-[0.24em] text-slate-400">
               Start here
             </p>
-            <h2 className="mt-2 text-2xl font-semibold text-white">
+            <h2 className="mt-2 text-[2rem] font-semibold tracking-[-0.04em] text-white">
               Seal your OpenClaw agent inside BoxAI.
             </h2>
           </div>
@@ -97,16 +152,16 @@ export function ModeWorkspace() {
                 key={mode.id}
                 type="button"
                 onClick={() => setSelectedModeId(mode.id)}
-                className={`mode-card ${accentClass} rounded-[1.25rem] border p-4 text-left transition-colors ${
+                className={`mode-card ${accentClass} rounded-[1.5rem] border p-4 text-left transition-colors ${
                   isActive
-                    ? "border-white/40 bg-white/[0.1] text-white shadow-[0_12px_30px_rgba(255,255,255,0.06)]"
-                    : "border-white/10 bg-white/[0.04] text-white hover:border-white/20 hover:bg-white/[0.07]"
+                    ? "border-white/24 bg-white/[0.1] text-white shadow-[0_12px_30px_rgba(255,255,255,0.04)]"
+                    : "border-white/10 bg-white/[0.03] text-white hover:border-white/18 hover:bg-white/[0.05]"
                 }`}
               >
-                <p className="text-xs font-semibold uppercase tracking-[0.24em] opacity-80">
+                <p className="font-[family:var(--font-plex-mono)] text-[0.68rem] font-medium uppercase tracking-[0.22em] opacity-72">
                   {mode.label}
                 </p>
-                <h2 className="mt-2 text-xl font-semibold">{mode.title}</h2>
+                <h2 className="mt-2 text-xl font-semibold tracking-[-0.03em]">{mode.title}</h2>
                 <p className="mt-2 text-sm leading-6 opacity-90">{mode.format}</p>
               </button>
             );
@@ -114,11 +169,11 @@ export function ModeWorkspace() {
         </div>
 
         <div>
-          <div className="input-stage rounded-[1.65rem] border border-white/10 bg-black/90 p-5 shadow-[inset_0_1px_0_rgba(255,255,255,0.04)]">
-            <p className="text-sm font-semibold uppercase tracking-[0.24em] text-slate-400">
+          <div className="input-stage rounded-[1.85rem] border border-white/10 bg-[rgba(11,14,18,0.82)] p-5 shadow-[inset_0_1px_0_rgba(255,255,255,0.04)]">
+            <p className="font-[family:var(--font-plex-mono)] text-[0.72rem] font-medium uppercase tracking-[0.24em] text-slate-400">
               Input
             </p>
-            <h3 className="mt-2 text-2xl font-semibold tracking-tight text-white">
+            <h3 className="mt-2 text-2xl font-semibold tracking-[-0.04em] text-white">
               {selectedMode.title}
             </h3>
             <p className="mt-3 text-sm leading-7 text-slate-300">
@@ -140,7 +195,7 @@ export function ModeWorkspace() {
               value={currentInput}
               onChange={(event) => updateDraft(event.target.value)}
               placeholder={selectedMode.placeholder}
-              className="mt-2 min-h-56 w-full rounded-[1.25rem] border border-white/12 bg-white/[0.04] px-4 py-4 text-sm leading-6 text-white outline-none transition placeholder:text-slate-500 focus:border-[var(--accent-cyan)] focus:bg-white/[0.06]"
+              className="mt-2 min-h-56 w-full rounded-[1.45rem] border border-white/12 bg-white/[0.03] px-4 py-4 text-sm leading-6 text-white outline-none transition placeholder:text-slate-500 focus:border-[var(--accent-cyan)] focus:bg-white/[0.05]"
             />
             {selectedMode.allowsFileUpload ? (
               <input
@@ -176,8 +231,8 @@ export function ModeWorkspace() {
                 </button>
               ) : null}
             </div>
-            <div className="mt-5 rounded-[1.3rem] border border-white/10 bg-white/[0.05] px-4 py-4 text-sm text-slate-100">
-              <p className="text-xs font-semibold uppercase tracking-[0.24em] text-slate-400">
+            <div className="mt-5 rounded-[1.45rem] border border-white/10 bg-white/[0.04] px-4 py-4 text-sm text-slate-100">
+              <p className="font-[family:var(--font-plex-mono)] text-[0.68rem] font-medium uppercase tracking-[0.24em] text-slate-400">
                 Input state
               </p>
               <p className="mt-2 leading-6 text-slate-100">
@@ -191,13 +246,13 @@ export function ModeWorkspace() {
       </div>
 
       <div className="space-y-6">
-        <aside className="rounded-[2rem] border border-white/10 bg-white/[0.03] p-6 text-slate-100 shadow-[0_20px_60px_rgba(0,0,0,0.28)]">
+        <aside className="rounded-[2.2rem] border border-white/10 bg-[linear-gradient(180deg,rgba(255,255,255,0.05),rgba(255,255,255,0.02))] p-6 text-slate-100 shadow-[0_20px_60px_rgba(0,0,0,0.18)]">
           <div className="flex items-center justify-between gap-3 border-b border-white/10 pb-4">
             <div>
               <p className="text-sm font-medium text-slate-100">Output execution</p>
               <p className="text-xs text-slate-300">Eight-step security pipeline</p>
             </div>
-            <span className="rounded-[0.65rem] border border-[var(--accent-cyan)]/50 bg-[rgba(77,238,234,0.14)] px-3 py-1.5 text-xs font-semibold text-white shadow-[inset_0_1px_0_rgba(255,255,255,0.05)]">
+            <span className="rounded-full border border-[var(--accent-cyan)]/36 bg-[rgba(158,193,182,0.14)] px-3 py-1.5 text-xs font-semibold text-white shadow-[inset_0_1px_0_rgba(255,255,255,0.05)]">
               {hasInput ? "Sample loaded" : "Dry preview"}
             </span>
           </div>
@@ -205,10 +260,10 @@ export function ModeWorkspace() {
             {selectedMode.stepOutputs.map((item, index) => (
               <div
                 key={item.step}
-                className="pipeline-card rounded-[1.35rem] border border-white/8 bg-black px-4 py-4"
+                className="pipeline-card rounded-[1.5rem] border border-white/8 bg-[rgba(11,14,18,0.82)] px-4 py-4"
               >
                 <div className="flex items-center justify-between gap-3">
-                  <p className="text-xs font-semibold uppercase tracking-[0.24em] text-slate-300">
+                  <p className="font-[family:var(--font-plex-mono)] text-[0.68rem] font-medium uppercase tracking-[0.22em] text-slate-300">
                     Step {item.step}
                   </p>
                   <span className="text-xs text-slate-300">
@@ -230,13 +285,13 @@ export function ModeWorkspace() {
           </div>
         </aside>
 
-        <section className="rounded-[2rem] border border-white/10 bg-white/[0.03] p-6 shadow-[0_18px_50px_rgba(0,0,0,0.24)]">
+        <section className="rounded-[2.2rem] border border-white/10 bg-[linear-gradient(180deg,rgba(255,255,255,0.05),rgba(255,255,255,0.02))] p-6 shadow-[0_18px_50px_rgba(0,0,0,0.16)]">
           <div className="flex items-center justify-between gap-4">
             <div>
-              <p className="text-sm font-semibold uppercase tracking-[0.24em] text-slate-400">
+              <p className="font-[family:var(--font-plex-mono)] text-[0.72rem] font-medium uppercase tracking-[0.24em] text-slate-400">
                 Next screens
               </p>
-              <h3 className="mt-2 text-2xl font-semibold tracking-tight text-white">
+              <h3 className="mt-2 text-2xl font-semibold tracking-[-0.04em] text-white">
                 Detail, finding, and report views.
               </h3>
             </div>

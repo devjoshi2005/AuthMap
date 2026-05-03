@@ -1,8 +1,17 @@
+import { auth } from "@clerk/nextjs/server";
+
 import { AppShell } from "../components/app-shell";
+import { AuthLanding } from "../components/auth-landing";
 import { ModeWorkspace } from "../components/mode-workspace";
 import { ScreenHeader } from "../components/screen-header";
 
-export default function Home() {
+export default async function Home() {
+  const { userId } = await auth();
+
+  if (!userId) {
+    return <AuthLanding isSignedIn={false} />;
+  }
+
   return (
     <AppShell>
       <div className="space-y-8 pb-10">

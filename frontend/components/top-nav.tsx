@@ -9,8 +9,8 @@ export function TopNav() {
   const pathname = usePathname();
 
   return (
-    <nav className="overflow-x-auto">
-      <div className="flex min-w-max items-center gap-6 border-b border-white/10 pb-1">
+    <nav className="no-scrollbar w-full overflow-x-auto overscroll-x-contain [scrollbar-width:none] [-ms-overflow-style:none]">
+      <div className="flex min-w-max snap-x snap-mandatory items-center gap-2 px-1 py-1">
       {navigationItems.map((item) => {
         const isActive = pathname === item.href;
 
@@ -18,10 +18,10 @@ export function TopNav() {
           <Link
             key={item.href}
             href={item.href}
-            className={`nav-link px-1 pb-3 pt-1 text-sm font-medium whitespace-nowrap transition-colors ${
+            className={`nav-link snap-start px-4 py-2 text-xs font-semibold uppercase tracking-[0.18em] whitespace-nowrap transition-colors ${
               isActive
-                ? "is-active text-white"
-                : "border-transparent text-slate-400 hover:text-slate-100"
+                ? "is-active"
+                : "text-slate-400 hover:border-white/16 hover:bg-white/[0.04] hover:text-slate-100"
             }`}
           >
             {item.label}
