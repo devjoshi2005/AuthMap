@@ -17,6 +17,15 @@ const forwardedOrigins = Array.from(
 
 const nextConfig: NextConfig = {
 	allowedDevOrigins: forwardedOrigins,
+	async redirects() {
+		return [
+			{
+				source: "/favicon.ico",
+				destination: "/next.png?v=2",
+				permanent: false,
+			},
+		];
+	},
 	experimental: {
 		serverActions: {
 			allowedOrigins: forwardedOrigins,

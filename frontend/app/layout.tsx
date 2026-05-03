@@ -19,7 +19,9 @@ export const metadata: Metadata = {
   description:
     "BoxAI seals OpenClaw-based agents inside a controllable boundary with scan setup, security modules, remediation, and report views.",
   icons: {
-    icon: "/next.png",
+    icon: [{ url: "/next.png?v=2", type: "image/png" }],
+    shortcut: ["/next.png?v=2"],
+    apple: [{ url: "/next.png?v=2", type: "image/png" }],
   },
 };
 
