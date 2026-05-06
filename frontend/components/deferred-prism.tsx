@@ -13,11 +13,19 @@ type DeferredPrismProps = PrismProps & {
   delayMs?: number;
 };
 
+type BrowserWindow = Window &
+  typeof globalThis & {
+    requestIdleCallback?: (callback: () => void, options?: { timeout: number }) => number;
+    cancelIdleCallback?: (handle: number) => void;
+  };
+
 export function DeferredPrism({ delayMs = 250, ...props }: DeferredPrismProps) {
   const [shouldRender, setShouldRender] = useState(false);
 
   useEffect(() => {
-    if (window.matchMedia("(prefers-reduced-motion: reduce)").matches) {
+    const browserWindow = window as BrowserWindow;
+
+    if (browserWindow.matchMedia("(prefers-reduced-motion: reduce)").matches) {
       return;
     }
 
@@ -26,19 +34,19 @@ export function DeferredPrism({ delayMs = 250, ...props }: DeferredPrismProps) {
 
     const showPrism = () => setShouldRender(true);
 
-    if ("requestIdleCallback" in window) {
-      idleId = window.requestIdleCallback(showPrism, { timeout: 1200 });
+    if (typeof browserWindow.requestIdleCallback === "function") {
+      idleId = browserWindow.requestIdleCallback(showPrism, { timeout: 1200 });
     } else {
-      timeoutId = window.setTimeout(showPrism, delayMs);
+      timeoutId = browserWindow.setTimeout(showPrism, delayMs);
     }
 
     return () => {
-      if (typeof idleId === "number" && "cancelIdleCallback" in window) {
-        window.cancelIdleCallback(idleId);
+      if (typeof idleId === "number" && typeof browserWindow.cancelIdleCallback === "function") {
+        browserWindow.cancelIdleCallback(idleId);
       }
 
       if (typeof timeoutId === "number") {
-        window.clearTimeout(timeoutId);
+        browserWindow.clearTimeout(timeoutId);
       }
     };
   }, [delayMs]);
