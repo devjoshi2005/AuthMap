@@ -2,7 +2,7 @@ import Link from "next/link";
 import type { ReactNode } from "react";
 
 import { BrandLogo } from "@/components/brand-logo";
-import Prism from "@/components/prism";
+import { DeferredPrism } from "@/components/deferred-prism";
 
 type AuthPageShellProps = {
   title: string;
@@ -22,7 +22,7 @@ export function AuthPageShell({
   return (
     <main className="relative min-h-screen overflow-hidden text-white">
       <div className="absolute inset-0 opacity-35">
-        <Prism
+        <DeferredPrism
           animationType="3drotate"
           timeScale={0.24}
           height={3.2}
@@ -76,7 +76,11 @@ export function AuthPageShell({
               {children}
             </div>
             <div className="mt-6 text-center text-sm text-slate-300 xl:text-left">
-              <Link href={alternateHref} className="text-[var(--accent-cyan)] hover:text-white">
+              <Link
+                href={alternateHref}
+                prefetch={false}
+                className="text-[var(--accent-cyan)] hover:text-white"
+              >
                 {alternateLabel}
               </Link>
             </div>

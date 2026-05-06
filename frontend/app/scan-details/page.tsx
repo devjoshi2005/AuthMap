@@ -11,7 +11,7 @@ export default function ScanDetailsPage() {
         <ScreenHeader
           eyebrow="Scan details"
           title="A compact scan session view."
-          description="This screen shows the current session shape, guardrails, and the eight-step timeline from module checks through remediation and report handoff."
+          description="This screen shows the current session shape, guardrails, and the nine-step timeline from module checks through compliance, remediation, and report handoff."
         />
 
         <section className="grid gap-6 xl:grid-cols-[0.9fr_1.1fr]">

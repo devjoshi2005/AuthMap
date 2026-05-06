@@ -3,7 +3,7 @@
 import { Mesh, Program, Renderer, Triangle } from "ogl";
 import React, { useEffect, useRef } from "react";
 
-type PrismProps = {
+export type PrismProps = {
   height?: number;
   baseWidth?: number;
   animationType?: "rotate" | "hover" | "3drotate";

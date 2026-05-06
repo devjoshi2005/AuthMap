@@ -1,20 +1,26 @@
+"use client";
+
+import { useAuth } from "@clerk/nextjs";
 import Link from "next/link";
 
 import { BrandLogo } from "@/components/brand-logo";
-import Prism from "@/components/prism";
+import { DeferredPrism } from "@/components/deferred-prism";
 
 type AuthLandingProps = {
   isSignedIn?: boolean;
 };
 
 export function AuthLanding({ isSignedIn = false }: AuthLandingProps) {
-  const signInHref = isSignedIn ? "/" : "/sign-in";
-  const heroHref = isSignedIn ? "/" : "/sign-up";
+  const { userId } = useAuth();
+  const effectiveIsSignedIn = isSignedIn || Boolean(userId);
+  const signInHref = effectiveIsSignedIn ? "/" : "/sign-in";
+  const signUpHref = effectiveIsSignedIn ? "/" : "/sign-up";
+  const heroHref = effectiveIsSignedIn ? "/" : "/sign-up";
 
   return (
     <main className="relative min-h-screen overflow-hidden text-white">
       <div className="pointer-events-none absolute inset-0 opacity-65">
-        <Prism
+        <DeferredPrism
           animationType="rotate"
           timeScale={0.24}
           height={3.35}
@@ -39,6 +45,7 @@ export function AuthLanding({ isSignedIn = false }: AuthLandingProps) {
           <div className="flex flex-wrap items-center justify-center gap-3 rounded-[1.2rem] border border-white/8 bg-white/[0.03] p-1.5 sm:justify-end">
             <Link
               href={signInHref}
+              prefetch={false}
               className="inline-flex items-stretch overflow-hidden rounded-[0.95rem] uppercase leading-none shadow-[0_10px_24px_rgba(0,0,0,0.22)] transition-transform hover:-translate-y-0.5"
             >
               <span
@@ -55,7 +62,8 @@ export function AuthLanding({ isSignedIn = false }: AuthLandingProps) {
               </span>
             </Link>
             <Link
-              href="/sign-up"
+              href={signUpHref}
+              prefetch={false}
               className="inline-flex items-stretch overflow-hidden rounded-[0.95rem] uppercase leading-none shadow-[0_10px_24px_rgba(0,0,0,0.22)] transition-transform hover:-translate-y-0.5"
             >
               <span
@@ -92,9 +100,10 @@ export function AuthLanding({ isSignedIn = false }: AuthLandingProps) {
               <div className="flex flex-wrap items-center justify-center gap-3 xl:justify-start">
                 <Link
                   href={heroHref}
+                  prefetch={false}
                   className="action-box action-box-cyan min-w-[12rem] px-5 py-3 text-sm font-semibold uppercase tracking-[0.18em] text-white"
                 >
-                  {isSignedIn ? "Return Home" : "Enter Workspace"}
+                  {effectiveIsSignedIn ? "Return Home" : "Enter Workspace"}
                 </Link>          
               </div>
 

@@ -27,22 +27,18 @@ export default async function Home() {
               Start with the input that matches your OpenClaw setup, watch the
               security modules unfold in a readable sequence, and move straight
               into <span className="text-[var(--accent-magenta)]">remediation</span>{" "}
-              and report views before anything leaves the box.
+              and <span className="text-[var(--accent-magenta)]">report</span>{" "} views before anything leaves the box.
             </>
           }
           aside={
             <div className="grid gap-4 sm:grid-cols-3">
               <div className="metric-rail metric-cyan pl-4">
                 <p className="text-sm text-slate-400">Input types</p>
-                <p className="mt-2 text-3xl font-semibold text-white">3</p>
+                <p className="mt-2 text-3xl font-semibold text-white">4</p>
               </div>
               <div className="metric-rail metric-gold pl-4">
                 <p className="text-sm text-slate-400">Pipeline steps</p>
-                <p className="mt-2 text-3xl font-semibold text-white">8</p>
-              </div>
-              <div className="metric-rail metric-magenta pl-4">
-                <p className="text-sm text-slate-400">Output mode</p>
-                <p className="mt-2 text-3xl font-semibold text-white">Demo</p>
+                <p className="mt-2 text-3xl font-semibold text-white">7</p>
               </div>
             </div>
           }
