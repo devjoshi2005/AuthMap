@@ -1,0 +1,12 @@
+fastapi==0.136.1
+sqlmodel==0.0.38
+sqlalchemy==2.0.49
+dotenv==0.9.9
+httpx==0.28.1
+psycopg2==2.9.12
+asyncpg==0.31.0
+requests==2.34.2
+python-jose==3.5.0
+uvicorn==0.47.0  #have to be removed later
+datasets==4.8.5
+pillow==12.2.0

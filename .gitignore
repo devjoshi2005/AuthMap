@@ -1,2 +1,4 @@
 node_modules/
 git-notes.md
+backend/.env
+backend/venv
