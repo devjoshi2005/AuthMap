@@ -15,7 +15,7 @@ export default async function Home() {
   return (
     <AppShell>
       <div className="space-y-8 pb-10">
-        <ScreenHave eader
+        <ScreenHeader
           eyebrow={
             <>
               <span className="text-[var(--accent-cyan)]">Frontend Overview</span>
