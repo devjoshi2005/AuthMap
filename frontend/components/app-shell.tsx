@@ -75,7 +75,7 @@ export async function AppShell({ children }: AppShellProps) {
               Session state
             </p>
             <p className="mt-3 text-sm leading-7 text-slate-300">
-              Drafts are retained locally per signed-in account in this browser for the frontend demo experience.
+              Drafts are retained locally per signed-in account in this browser for the frontend experience.
             </p>
           </div>
           <div>
@@ -83,7 +83,7 @@ export async function AppShell({ children }: AppShellProps) {
               Scope
             </p>
             <p className="mt-3 text-sm leading-7 text-slate-300">
-              This environment demonstrates the product shell, auth flow, and operator review path without backend persistence.
+              This environment demonstrates the product shell, auth flow, and operator review path with backend persistence.
             </p>
           </div>
         </div>

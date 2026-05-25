@@ -3,6 +3,7 @@ import os
 from typing import Optional,AsyncGenerator,Sequence
 from sqlmodel import SQLModel, Field
 from fastapi import FastAPI, Depends, HTTPException, Request,APIRouter
+from fastapi.middleware.cors import CORSMiddleware
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 import httpx
 from jose import JWTError, jwt
@@ -11,7 +12,8 @@ from contextlib import asynccontextmanager
 from sqlmodel.ext.asyncio.session import AsyncSession
 from sqlalchemy.orm import sessionmaker 
 from sqlmodel import select,text
-
+from pydantic import BaseModel
+from module1_prompt_injection import run_prompt_injection_scan
 
 load_dotenv()
 
@@ -28,6 +30,18 @@ class Scan_Data(SQLModel, table=True):
     id: Optional[int] = Field(default=None, primary_key=True)
     terraform_code_file: str = Field(nullable=False) 
     compliance_report_file: str = Field(nullable=False)
+    user_id: str = Field(nullable=False)
+
+class ScanRequest(BaseModel):
+    url: str
+    tier: str
+
+class Global_Scan_Docs(SQLModel, table=True):
+    id: Optional[int] = Field(default=None, primary_key=True)
+    scan_url: str = Field(nullable=False)
+    tier: str = Field(nullable=False)
+    outputs: str = Field(default="")
+    remediation: str = Field(default="")
     user_id: str = Field(nullable=False)
 
 security = HTTPBearer()
@@ -73,10 +87,12 @@ async def get_current_user_id(request: Request, credentials: HTTPAuthorizationCr
     try:
         unverified_claims = jwt.get_unverified_claims(token)
     except JWTError as exc:
+        print(f"[AUTH ERROR] Failed to get unverified claims: {exc}")
         raise HTTPException(status_code=401, detail="Invalid token") from exc
 
-    issuer = os.getenv("CLERK_JWT_ISSUER") or unverified_claims.get("iss")
+    issuer = unverified_claims.get("iss")
     if not issuer:
+        print("[AUTH ERROR] Token missing 'iss' claim")
         raise HTTPException(status_code=401, detail="Invalid token")
 
     try:
@@ -85,6 +101,7 @@ async def get_current_user_id(request: Request, credentials: HTTPAuthorizationCr
         try:
             claims = await decode_clerk_token(token, issuer, force_refresh=True)
         except JWTError as exc:
+            print(f"[AUTH ERROR] Failed to decode token: {exc}")
             raise HTTPException(status_code=401, detail="Invalid token") from exc
 
     user_id = claims.get("sub")
@@ -96,7 +113,7 @@ async def get_current_user_id(request: Request, credentials: HTTPAuthorizationCr
 
 
 #creating a async engine
-engine = create_async_engine(uri, echo=True,connect_args={
+engine = create_async_engine(uri, echo=False, connect_args={
         "prepared_statement_cache_size": 0,  
         "statement_cache_size": 0           
     })
@@ -117,15 +134,27 @@ async def get_session() -> AsyncGenerator[AsyncSession,None]:
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    # create table on startup stage if doesnt exist
+    # create tables on startup only if they don't already exist (checkfirst=True is the default)
     async with engine.begin() as conn:
         await conn.run_sync(SQLModel.metadata.create_all)
+    print("[STARTUP] Tables verified (created only if missing).")
     yield 
     await engine.dispose()
 
 app = FastAPI(lifespan=lifespan)
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=[
+        "http://localhost:3000",
+        "https://boxai-v1.vercel.app"
+    ],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
 router = APIRouter()
-app.include_router(router)
 
 
 @router.post("/documents/")
@@ -160,3 +189,49 @@ async def delete_document(doc_id:int,
     await session.commit()
     return {"message":"Document deleted"}
 
+
+@router.post("/scan/run")
+async def run_scan(scan_request: ScanRequest,
+                   session: AsyncSession = Depends(get_session),
+                   user_id: str = Depends(get_current_user_id)) -> Global_Scan_Docs:
+    if not scan_request.url.startswith("http"):
+        raise HTTPException(status_code=400, detail="Invalid URL. Must start with http or https.")
+    if scan_request.tier not in ["small", "avg", "big"]:
+         scan_request.tier = "small"
+    
+    # Run scan module 1
+    try:
+        outputs, remediation = await run_prompt_injection_scan(scan_request.url, scan_request.tier)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to run scan: {str(e)}")
+        
+    db_scan = Global_Scan_Docs(
+        scan_url=scan_request.url,
+        tier=scan_request.tier,
+        outputs=outputs,
+        remediation=remediation,
+        user_id=user_id
+    )
+    session.add(db_scan)
+    await session.commit()
+    await session.refresh(db_scan)
+    return db_scan
+
+@router.get("/scan/results")
+async def get_scan_results(session: AsyncSession = Depends(get_session),
+                           user_id: str = Depends(get_current_user_id)) -> Sequence[Global_Scan_Docs]:
+    statement = select(Global_Scan_Docs).where(Global_Scan_Docs.user_id == user_id)
+    result = await session.exec(statement)
+    return result.all()
+
+@router.get("/scan/results/latest")
+async def get_latest_scan(session: AsyncSession = Depends(get_session),
+                          user_id: str = Depends(get_current_user_id)) -> Global_Scan_Docs:
+    statement = select(Global_Scan_Docs).where(Global_Scan_Docs.user_id == user_id).order_by(Global_Scan_Docs.id.desc())
+    result = await session.exec(statement)
+    doc = result.first()
+    if not doc:
+        raise HTTPException(status_code=404, detail="No scan results found. Run a scan first.")
+    return doc
+
+app.include_router(router)

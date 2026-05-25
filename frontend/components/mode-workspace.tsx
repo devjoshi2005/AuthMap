@@ -1,10 +1,10 @@
 "use client";
 
-import { useUser } from "@clerk/nextjs";
+import { useUser, useAuth } from "@clerk/nextjs";
 import Link from "next/link";
 import { useEffect, useRef, useState } from "react";
 
-import { moduleLabels, scanModes, type ModeId } from "@/lib/demo-data";
+import { moduleLabels, scanModes, type ModeId } from "@/lib/scan-data";
 
 const MAX_INPUT_TYPES = 4;
 
@@ -59,10 +59,13 @@ function getAccentClass(modeId: ModeId) {
 
 export function ModeWorkspace() {
   const { user } = useUser();
+  const { getToken } = useAuth();
   const [activeModeId, setActiveModeId] = useState<ModeId>(scanModes[0].id);
   const [drafts, setDrafts] = useState<Record<ModeId, string>>(createInitialDrafts);
   const [fileNames, setFileNames] = useState<Record<ModeId, string>>(createInitialFileNames);
   const [hasLoadedPersistedState, setHasLoadedPersistedState] = useState(false);
+  const [scanTier, setScanTier] = useState<"small" | "avg" | "big">("small");
+  const [isScanning, setIsScanning] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   const storageKey = user ? `boxai:workspace:${user.id}` : null;
@@ -174,6 +177,34 @@ export function ModeWorkspace() {
     }));
 
     event.target.value = "";
+  }
+
+  async function handleRunScan() {
+    let url = currentInput.trim();
+    if (url.startsWith("Target URL: ")) {
+       url = url.replace("Target URL: ", "").split("\n")[0].trim();
+    }
+    setIsScanning(true);
+    try {
+      const token = await getToken();
+      const res = await fetch("http://localhost:8000/scan/run", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "Authorization": `Bearer ${token}`
+        },
+        body: JSON.stringify({ url: url, tier: scanTier }),
+      });
+      if (!res.ok) {
+         throw new Error("Failed to run scan.");
+      }
+      alert("Scan completed successfully! Results stored in the global documents.");
+    } catch (e) {
+      console.error(e);
+      alert("Error running the scan.");
+    } finally {
+      setIsScanning(false);
+    }
   }
 
   return (
@@ -311,7 +342,55 @@ export function ModeWorkspace() {
                 className="hidden"
               />
             ) : null}
+
+            {activeMode.id === "endpoint" && (
+              <div className="mt-4 rounded-[1.2rem] border border-white/10 bg-white/[0.04] px-4 py-4 w-full">
+                <p className="font-[family:var(--font-plex-mono)] text-[0.68rem] font-medium uppercase tracking-[0.24em] text-slate-400">
+                  Scan Tier (Module 1)
+                </p>
+                <div className="mt-3 flex flex-wrap gap-2">
+                  <button
+                    type="button"
+                    onClick={() => setScanTier("small")}
+                    className={`rounded-lg border px-3 py-2 text-xs font-medium transition ${
+                      scanTier === "small" ? "border-[var(--accent-gold)] bg-[var(--accent-gold)]/10 text-white" : "border-white/10 text-slate-400 hover:text-white hover:border-white/20"
+                    }`}
+                  >
+                    Small (Basic, ~100)
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setScanTier("avg")}
+                    className={`rounded-lg border px-3 py-2 text-xs font-medium transition ${
+                      scanTier === "avg" ? "border-[var(--accent-gold)] bg-[var(--accent-gold)]/10 text-white" : "border-white/10 text-slate-400 hover:text-white hover:border-white/20"
+                    }`}
+                  >
+                    Average (Standard, ~1k)
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setScanTier("big")}
+                    className={`rounded-lg border px-3 py-2 text-xs font-medium transition ${
+                      scanTier === "big" ? "border-[var(--accent-gold)] bg-[var(--accent-gold)]/10 text-white" : "border-white/10 text-slate-400 hover:text-white hover:border-white/20"
+                    }`}
+                  >
+                    Big (Audit, ~15k)
+                  </button>
+                </div>
+              </div>
+            )}
+
             <div className="mt-4 flex flex-wrap gap-3">
+              {activeMode.id === "endpoint" && (
+                <button
+                  type="button"
+                  onClick={handleRunScan}
+                  disabled={isScanning || !currentInput.trim()}
+                  className="action-box action-box-gold px-4 py-3 text-sm font-medium text-white disabled:opacity-50"
+                >
+                  {isScanning ? "Running Scan..." : "Run Scan"}
+                </button>
+              )}
               <button
                 type="button"
                 onClick={loadSample}

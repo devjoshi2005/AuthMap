@@ -4,7 +4,7 @@ import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { useEffect, useRef, useState } from "react";
 
-import { navigationItems } from "@/lib/demo-data";
+import { navigationItems } from "@/lib/scan-data";
 
 export function TopNav() {
   const pathname = usePathname();

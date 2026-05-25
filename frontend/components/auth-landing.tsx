@@ -128,7 +128,7 @@ export function AuthLanding({ isSignedIn = false }: AuthLandingProps) {
               <article className="rounded-[1.8rem] border border-white/10 bg-[linear-gradient(180deg,rgba(255,255,255,0.05),rgba(255,255,255,0.02))] p-6 shadow-[0_18px_44px_rgba(0,0,0,0.16)]">
                 <p className="font-[family:var(--font-plex-mono)] text-[0.66rem] font-medium uppercase tracking-[0.24em] text-[var(--accent-gold)]">Per-user state</p>
                 <h2 className="mt-3 text-2xl font-semibold tracking-[-0.04em] text-white">Return where you left off</h2>
-                <p className="mt-3 text-sm leading-7 text-slate-300">Demo drafts persist per signed-in account in this browser, so the workspace feels continuous across sessions.</p>
+                <p className="mt-3 text-sm leading-7 text-slate-300">Scan drafts persist per signed-in account in this browser, so the workspace feels continuous across sessions.</p>
               </article>
             </div>
           </div>
@@ -141,7 +141,7 @@ export function AuthLanding({ isSignedIn = false }: AuthLandingProps) {
                 BoxAI overview
               </p>
               <p className="mt-3 text-sm leading-7 text-slate-300">
-                Frontend-only AI agent security scanner demo with protected access, readable scan flow, and controlled report review inside one product shell.
+                Frontend-only AI agent security scanner with protected access, readable scan flow, and controlled report review inside one product shell.
               </p>
             </div>
             <div>
@@ -157,7 +157,7 @@ export function AuthLanding({ isSignedIn = false }: AuthLandingProps) {
                 Access
               </p>
               <p className="mt-3 text-sm leading-7 text-slate-300">
-                Sign in or create an account to enter the contained workspace and retain local demo state per user.
+                Sign in or create an account to enter the contained workspace and retain local scan state per user.
               </p>
             </div>
           </div>

@@ -125,7 +125,7 @@ export function AccountDangerZone() {
           Danger zone
         </p>
         <p className="mt-2 max-w-2xl text-sm leading-7 text-slate-300">
-          Workspace drafts in this frontend demo are retained per signed-in account in this browser. Deleting the account removes the Clerk identity permanently.
+          Workspace drafts in this frontend are retained per signed-in account in this browser. Deleting the account removes the Clerk identity permanently.
         </p>
       </div>
       <button

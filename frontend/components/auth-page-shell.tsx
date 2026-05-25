@@ -66,7 +66,7 @@ export function AuthPageShell({
               </div>
               <div className="rounded-[1.4rem] border border-white/10 bg-white/[0.03] p-4">
                 <p className="font-[family:var(--font-plex-mono)] text-[0.65rem] uppercase tracking-[0.24em] text-slate-400">Retention</p>
-                <p className="mt-2 text-sm leading-6 text-slate-300">Your demo workspace state remains tied to your signed-in account.</p>
+                <p className="mt-2 text-sm leading-6 text-slate-300">Your scan workspace state remains tied to your signed-in account.</p>
               </div>
             </div>
           </div>
