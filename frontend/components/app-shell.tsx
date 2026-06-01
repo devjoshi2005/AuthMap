@@ -1,4 +1,6 @@
-import { currentUser } from "@clerk/nextjs/server";
+"use client";
+
+import { useUser } from "@clerk/nextjs";
 import Link from "next/link";
 import type { ReactNode } from "react";
 
@@ -10,7 +12,9 @@ type AppShellProps = {
   children: ReactNode;
 };
 
-function getAccountLabel(user: Awaited<ReturnType<typeof currentUser>>) {
+type UserResource = ReturnType<typeof useUser>['user'];
+
+function getAccountLabel(user: UserResource) {
   if (!user) {
     return "Operator";
   }
@@ -24,8 +28,8 @@ function getAccountLabel(user: Awaited<ReturnType<typeof currentUser>>) {
   );
 }
 
-export async function AppShell({ children }: AppShellProps) {
-  const user = await currentUser();
+export function AppShell({ children }: AppShellProps) {
+  const { user } = useUser();
   const accountLabel = getAccountLabel(user);
 
   return (

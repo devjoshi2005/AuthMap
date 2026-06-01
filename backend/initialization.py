@@ -2,7 +2,8 @@ from dotenv import load_dotenv
 import os
 from typing import Optional,AsyncGenerator,Sequence
 from sqlmodel import SQLModel, Field
-from fastapi import FastAPI, Depends, HTTPException, Request,APIRouter
+from fastapi import FastAPI, Depends, HTTPException, Request, APIRouter
+from fastapi.responses import Response, FileResponse
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 import httpx
@@ -14,6 +15,11 @@ from sqlalchemy.orm import sessionmaker
 from sqlmodel import select,text
 from pydantic import BaseModel
 from module1_prompt_injection import run_prompt_injection_scan
+from pdf_generator import generate_ai_report, generate_remediation_pdf
+import time
+import aiofiles
+
+os.makedirs("./reports", exist_ok=True)
 
 load_dotenv()
 
@@ -21,28 +27,24 @@ uri = os.getenv('POSTGRES_URI').replace("postgresql://", "postgresql+asyncpg://"
 
 
 
-class Scan_DataCreate(SQLModel):
-    terraform_code_file: str
-    compliance_report_file: str
-
-
 class Scan_Data(SQLModel, table=True):
     id: Optional[int] = Field(default=None, primary_key=True)
-    terraform_code_file: str = Field(nullable=False) 
-    compliance_report_file: str = Field(nullable=False)
     user_id: str = Field(nullable=False)
+    compliance_pdf_path: str = Field(default="")
+    remediation_pdf_path: str = Field(default="")
+    findings_txt_path: str = Field(default="")
 
 class ScanRequest(BaseModel):
     url: str
     tier: str
+    llm_provider: str = "openai"
+    api_key: str = ""
 
-class Global_Scan_Docs(SQLModel, table=True):
-    id: Optional[int] = Field(default=None, primary_key=True)
-    scan_url: str = Field(nullable=False)
-    tier: str = Field(nullable=False)
-    outputs: str = Field(default="")
-    remediation: str = Field(default="")
-    user_id: str = Field(nullable=False)
+class VerifyKeyRequest(BaseModel):
+    provider: str
+    api_key: str
+
+
 
 security = HTTPBearer()
 clerk_jwks_cache: dict[str, dict] = {}
@@ -157,81 +159,112 @@ app.add_middleware(
 router = APIRouter()
 
 
-@router.post("/documents/")
-async def insert_documents(scan_data : Scan_DataCreate,
-                           session:AsyncSession=Depends(get_session),
-                           user_id:str=Depends(get_current_user_id)) -> Scan_Data:
-    db_scan_data = Scan_Data(terraform_code_file=scan_data.terraform_code_file,
-                            compliance_report_file=scan_data.compliance_report_file,
-                            user_id=user_id)
-    session.add(db_scan_data)
-    await session.commit()
-    await session.refresh(db_scan_data)
-    return db_scan_data 
+@router.post("/keys/verify")
+async def verify_api_key(req: VerifyKeyRequest, user_id: str = Depends(get_current_user_id)):
+    provider = req.provider.lower()
+    api_key = req.api_key.strip()
+    
+    if not api_key:
+        raise HTTPException(status_code=400, detail="API key is required")
 
-@router.get("/documents/")
-async def read_document(session:AsyncSession=Depends(get_session),
-                        user_id : str = Depends(get_current_user_id)) -> Sequence[Scan_Data]:
-    statement = select(Scan_Data).where(Scan_Data.user_id==user_id)
-    result = await session.exec(statement)                            
-    return result.all()
-
-@router.delete("/documents/{doc_id}")
-async def delete_document(doc_id:int,
-                          session:AsyncSession=Depends(get_session),
-                          user_id : str=Depends(get_current_user_id)):
-    statement = select(Scan_Data).where(Scan_Data.id==doc_id,Scan_Data.user_id==user_id)
-    result = await session.exec(statement)
-    db_scan_data = result.one_or_none()
-    if not db_scan_data:
-        raise HTTPException(status_code=404,detail="Document not found")
-    await session.delete(db_scan_data)
-    await session.commit()
-    return {"message":"Document deleted"}
-
+    async with httpx.AsyncClient(timeout=10.0) as client:
+        try:
+            if provider == "openai":
+                res = await client.get("https://api.openai.com/v1/models", headers={"Authorization": f"Bearer {api_key}"})
+                if res.status_code != 200:
+                    raise HTTPException(status_code=401, detail="Invalid OpenAI API Key")
+            elif provider == "anthropic":
+                res = await client.post(
+                    "https://api.anthropic.com/v1/messages",
+                    headers={"x-api-key": api_key, "anthropic-version": "2023-06-01", "content-type": "application/json"},
+                    json={"model": "claude-3-haiku-20240307", "max_tokens": 1, "messages": [{"role": "user", "content": "hi"}]}
+                )
+                if res.status_code == 401 or res.status_code == 403:
+                    raise HTTPException(status_code=401, detail="Invalid Anthropic API Key")
+            elif provider == "gemini":
+                res = await client.get(f"https://generativelanguage.googleapis.com/v1beta/models?key={api_key}")
+                if res.status_code != 200:
+                    raise HTTPException(status_code=401, detail="Invalid Gemini API Key")
+            else:
+                raise HTTPException(status_code=400, detail="Unsupported provider")
+                
+            return {"status": "ok", "message": "Valid API Key"}
+        except httpx.RequestError as e:
+            raise HTTPException(status_code=503, detail="Failed to connect to provider API")
+            
 
 @router.post("/scan/run")
 async def run_scan(scan_request: ScanRequest,
                    session: AsyncSession = Depends(get_session),
-                   user_id: str = Depends(get_current_user_id)) -> Global_Scan_Docs:
+                   user_id: str = Depends(get_current_user_id)) -> Scan_Data:
     if not scan_request.url.startswith("http"):
         raise HTTPException(status_code=400, detail="Invalid URL. Must start with http or https.")
     if scan_request.tier not in ["small", "avg", "big"]:
          scan_request.tier = "small"
     
-    # Run scan module 1
     try:
-        outputs, remediation = await run_prompt_injection_scan(scan_request.url, scan_request.tier)
+        outputs, remediation = await run_prompt_injection_scan(scan_request.url, scan_request.tier, scan_request.llm_provider, scan_request.api_key)
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Failed to run scan: {str(e)}")
         
-    db_scan = Global_Scan_Docs(
-        scan_url=scan_request.url,
-        tier=scan_request.tier,
-        outputs=outputs,
-        remediation=remediation,
-        user_id=user_id
+    ts = int(time.time())
+    
+    findings_path = f"./reports/findings_{user_id}_{ts}.txt"
+    async with aiofiles.open(findings_path, mode="w", encoding="utf-8") as f:
+        await f.write(outputs)
+        
+    comp_pdf_bytes = generate_ai_report(ts, scan_request.url, scan_request.tier, outputs, remediation)
+    compliance_path = f"./reports/compliance_{user_id}_{ts}.pdf"
+    async with aiofiles.open(compliance_path, mode="wb") as f:
+        await f.write(comp_pdf_bytes)
+        
+    rem_pdf_bytes = generate_remediation_pdf(remediation)
+    remediation_path = f"./reports/remediation_{user_id}_{ts}.pdf"
+    async with aiofiles.open(remediation_path, mode="wb") as f:
+        await f.write(rem_pdf_bytes)
+    
+    db_scan = Scan_Data(
+        user_id=user_id,
+        findings_txt_path=findings_path,
+        compliance_pdf_path=compliance_path,
+        remediation_pdf_path=remediation_path
     )
     session.add(db_scan)
     await session.commit()
     await session.refresh(db_scan)
     return db_scan
 
-@router.get("/scan/results")
-async def get_scan_results(session: AsyncSession = Depends(get_session),
-                           user_id: str = Depends(get_current_user_id)) -> Sequence[Global_Scan_Docs]:
-    statement = select(Global_Scan_Docs).where(Global_Scan_Docs.user_id == user_id)
-    result = await session.exec(statement)
-    return result.all()
-
 @router.get("/scan/results/latest")
 async def get_latest_scan(session: AsyncSession = Depends(get_session),
-                          user_id: str = Depends(get_current_user_id)) -> Global_Scan_Docs:
-    statement = select(Global_Scan_Docs).where(Global_Scan_Docs.user_id == user_id).order_by(Global_Scan_Docs.id.desc())
+                          user_id: str = Depends(get_current_user_id)) -> Scan_Data:
+    statement = select(Scan_Data).where(Scan_Data.user_id == user_id).order_by(Scan_Data.id.desc())
     result = await session.exec(statement)
     doc = result.first()
     if not doc:
-        raise HTTPException(status_code=404, detail="No scan results found. Run a scan first.")
+        raise HTTPException(status_code=404, detail="No scan results found")
     return doc
+
+@router.get("/scan/download/{scan_id}/{file_type}")
+async def download_file(scan_id: int, file_type: str, 
+                        session: AsyncSession = Depends(get_session),
+                        user_id: str = Depends(get_current_user_id)):
+    statement = select(Scan_Data).where(Scan_Data.id == scan_id, Scan_Data.user_id == user_id)
+    result = await session.exec(statement)
+    doc = result.one_or_none()
+    
+    if not doc:
+        raise HTTPException(status_code=404, detail="Scan not found")
+        
+    path_map = {
+        "compliance": doc.compliance_pdf_path,
+        "remediation": doc.remediation_pdf_path,
+        "findings": doc.findings_txt_path
+    }
+    
+    file_path = path_map.get(file_type)
+    if not file_path or not os.path.exists(file_path):
+        raise HTTPException(status_code=404, detail="File does not exist")
+        
+    return FileResponse(path=file_path, filename=os.path.basename(file_path))
 
 app.include_router(router)

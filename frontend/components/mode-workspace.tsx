@@ -66,6 +66,10 @@ export function ModeWorkspace() {
   const [hasLoadedPersistedState, setHasLoadedPersistedState] = useState(false);
   const [scanTier, setScanTier] = useState<"small" | "avg" | "big">("small");
   const [isScanning, setIsScanning] = useState(false);
+  const [apiKey, setApiKey] = useState("");
+  const [llmProvider, setLlmProvider] = useState<"openai" | "anthropic" | "gemini">("openai");
+  const [apiKeyStatus, setApiKeyStatus] = useState<"unverified" | "verifying" | "verified" | "error">("unverified");
+  const [apiVerifyContext, setApiVerifyContext] = useState("");
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   const storageKey = user ? `boxai:workspace:${user.id}` : null;
@@ -127,6 +131,16 @@ export function ModeWorkspace() {
   }, [storageKey]);
 
   useEffect(() => {
+    const savedKey = window.sessionStorage.getItem("boxai_api_key");
+    const savedProvider = window.sessionStorage.getItem("boxai_llm_provider");
+    if (savedKey && savedProvider) {
+      setApiKey(savedKey);
+      setLlmProvider(savedProvider as "openai" | "anthropic" | "gemini");
+      setApiKeyStatus("verified");
+    }
+  }, []);
+
+  useEffect(() => {
     if (!storageKey || !hasLoadedPersistedState) {
       return;
     }
@@ -179,7 +193,39 @@ export function ModeWorkspace() {
     event.target.value = "";
   }
 
+  async function handleVerifyApiKey() {
+    if (!apiKey.trim()) return;
+    setApiKeyStatus("verifying");
+    try {
+      const token = await getToken();
+      const res = await fetch("http://localhost:8000/keys/verify", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "Authorization": `Bearer ${token}`
+        },
+        body: JSON.stringify({ provider: llmProvider, api_key: apiKey.trim() }),
+      });
+      if (res.ok) {
+        setApiKeyStatus("verified");
+        setApiVerifyContext("API key validated successfully.");
+        window.sessionStorage.setItem("boxai_api_key", apiKey.trim());
+        window.sessionStorage.setItem("boxai_llm_provider", llmProvider);
+      } else {
+        setApiKeyStatus("error");
+        setApiVerifyContext("Verification failed. Please check your key.");
+      }
+    } catch {
+      setApiKeyStatus("error");
+      setApiVerifyContext("Could not reach backend to verify the key.");
+    }
+  }
+
   async function handleRunScan() {
+    if (apiKeyStatus !== "verified") {
+      alert("Please configure and verify an LLM API Key first.");
+      return;
+    }
     let url = currentInput.trim();
     if (url.startsWith("Target URL: ")) {
        url = url.replace("Target URL: ", "").split("\n")[0].trim();
@@ -193,7 +239,12 @@ export function ModeWorkspace() {
           "Content-Type": "application/json",
           "Authorization": `Bearer ${token}`
         },
-        body: JSON.stringify({ url: url, tier: scanTier }),
+        body: JSON.stringify({ 
+          url: url, 
+          tier: scanTier, 
+          llm_provider: llmProvider, 
+          api_key: apiKey.trim() 
+        }),
       });
       if (!res.ok) {
          throw new Error("Failed to run scan.");
@@ -208,7 +259,70 @@ export function ModeWorkspace() {
   }
 
   return (
-    <section id="intake-workspace" className="mt-8 grid gap-6 xl:grid-cols-[1.1fr_0.9fr] scroll-mt-24">
+    <>
+      <section className="mt-8 rounded-[2.2rem] border border-white/10 bg-[linear-gradient(180deg,rgba(255,255,255,0.05),rgba(255,255,255,0.02))] p-6 shadow-[0_20px_54px_rgba(0,0,0,0.18)]">
+        <div className="flex flex-col gap-4 md:flex-row md:items-center md:justify-between">
+          <div>
+            <p className="font-[family:var(--font-plex-mono)] text-[0.72rem] font-medium uppercase tracking-[0.24em] text-slate-400">
+              Prerequisite
+            </p>
+            <h2 className="mt-2 text-[2rem] font-semibold tracking-[-0.04em] text-white">
+              Remediation LLM Backend Configuration
+            </h2>
+          </div>
+          <p className="max-w-md text-sm leading-6 text-slate-300">
+            A valid API key is required to generate the security remediation roadmap for this scan. We verify this via a secure backend HTTPS request to the provider. The key is securely held purely in browser session memory.
+          </p>
+        </div>
+        
+        <div className="mt-6 flex flex-col gap-4 sm:flex-row sm:items-end">
+          <div className="flex-1 space-y-2">
+            <label className="text-sm font-medium text-slate-300 uppercase tracking-widest text-[0.65rem]">Select LLM Provider</label>
+            <select 
+              value={llmProvider}
+              onChange={(e) => {
+                setLlmProvider(e.target.value as any);
+                setApiKeyStatus("unverified");
+              }}
+              className="w-full rounded-xl border border-white/10 bg-black/40 px-4 py-3 text-sm text-white outline-none focus:border-white/20"
+            >
+              <option value="openai">OpenAI (gpt-4o)</option>
+              <option value="anthropic">Anthropic (claude-3-5-sonnet)</option>
+              <option value="gemini">Google (gemini-pro)</option>
+            </select>
+          </div>
+          <div className="flex-[2] space-y-2">
+            <label className="text-sm font-medium text-slate-300 uppercase tracking-widest text-[0.65rem]">Enter API Key (Kept in memory)</label>
+            <div className="flex gap-3">
+              <input 
+                type="password"
+                placeholder={`Paste your ${llmProvider} API Key here...`}
+                value={apiKey}
+                onChange={(e) => {
+                  setApiKey(e.target.value);
+                  setApiKeyStatus("unverified");
+                }}
+                className="flex-1 rounded-xl border border-white/10 bg-black/40 px-4 py-3 text-sm text-white outline-none focus:border-white/20"
+              />
+              <button 
+                type="button"
+                onClick={handleVerifyApiKey}
+                disabled={!apiKey || apiKeyStatus === "verifying" || apiKeyStatus === "verified"}
+                className={`rounded-xl px-5 py-3 text-sm font-bold uppercase tracking-wider text-white transition-opacity disabled:opacity-50 ${apiKeyStatus === "verified" ? "bg-green-600" : "bg-blue-600"}`}
+              >
+                {apiKeyStatus === "verifying" ? "Verifying..." : apiKeyStatus === "verified" ? "Verified ✓" : "Verify Key"}
+              </button>
+            </div>
+          </div>
+        </div>
+        {apiVerifyContext && (
+          <p className={`mt-3 text-sm ${apiKeyStatus === "error" ? "text-red-400" : "text-green-400"}`}>
+            {apiVerifyContext}
+          </p>
+        )}
+      </section>
+
+      <section id="intake-workspace" className={`mt-8 grid gap-6 xl:grid-cols-[1.1fr_0.9fr] scroll-mt-24 ${apiKeyStatus !== "verified" ? "pointer-events-none opacity-50" : ""}`}>
       <div className="intake-hero space-y-6 rounded-[2.2rem] border border-white/10 bg-[linear-gradient(180deg,rgba(255,255,255,0.05),rgba(255,255,255,0.02))] p-6 shadow-[0_20px_54px_rgba(0,0,0,0.18)]">
         <div className="flex flex-col gap-4 md:flex-row md:items-center md:justify-between">
           <div>
@@ -522,5 +636,6 @@ export function ModeWorkspace() {
         </section>
       </div>
     </section>
+    </>
   );
 }
