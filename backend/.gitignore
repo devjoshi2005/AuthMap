@@ -1,0 +1,3 @@
+collectors/.aws
+collectors/.gcp
+collectors/.env

@@ -15,13 +15,13 @@ const plexMono = IBM_Plex_Mono({
 });
 
 export const metadata: Metadata = {
-  title: "BoxAI",
+  title: "AuthMap",
   description:
-    "BoxAI seals OpenClaw-based agents inside a controllable boundary with scan setup, security modules, remediation, and report views.",
+    "AuthMap maps IAM attack paths across AWS and GCP, detects privilege escalation risks with 4-layer analysis, and correlates cloud cost waste with security exposure.",
   icons: {
-    icon: [{ url: "/next.png?v=2", type: "image/png" }],
-    shortcut: ["/next.png?v=2"],
-    apple: [{ url: "/next.png?v=2", type: "image/png" }],
+    icon: [{ url: "/favicon.png", type: "image/png" }],
+    shortcut: ["/favicon.png"],
+    apple: [{ url: "/favicon.png", type: "image/png" }],
   },
 };
 

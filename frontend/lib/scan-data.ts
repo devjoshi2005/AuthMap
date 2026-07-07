@@ -1,4 +1,4 @@
-export type ModeId = "config" | "endpoint" | "code" | "modelCard";
+export type ModeId = "awsIam" | "gcpIam" | "costData" | "auditLogs";
 
 export type StepOutput = {
   step: string;
@@ -26,355 +26,294 @@ export type ScanMode = {
 };
 
 export const navigationItems = [
-  { href: "/", label: "Overview" },
+  { href: "/", label: "Dashboard" },
+  { href: "/scan-wizard", label: "Scan Wizard" },
+  { href: "/graph", label: "Graph" },
   { href: "/findings", label: "Findings" },
+  { href: "/cost-matrix", label: "Cost Matrix" },
   { href: "/reports", label: "Reports" },
 ];
 
 export const scanModes: ScanMode[] = [
   {
-    id: "config",
+    id: "awsIam",
     label: "Mode 1",
-    title: "Config file",
-    format: "YAML / JSON",
+    title: "AWS IAM Config",
+    format: "JSON / CSV",
     description:
-      "Paste a config file payload for safe parsing, schema checks, and non-executing security review.",
+      "Import AWS IAM policies, users, roles, and groups. AuthMap parses the trust relationships and builds a graph for privilege escalation analysis.",
     coverageSummary:
-      "Best for RAG, tool, MCP, and compliance checks. Partial signal for prompt extraction and output handling.",
-    inputLabel: "Config input",
+      "Full coverage for static policy analysis, managed policy checks, and Rhino Security Labs 16-method escalation detection on AWS.",
+    inputLabel: "AWS IAM input",
     placeholder:
-      "Paste YAML or JSON here. Leave it empty to preview the pipeline with a dry run.",
+      "Paste IAM policy JSON, user/role listings, or attached policy documents here.",
     sampleInput: [
-      "agent_name: support-bot",
-      "rag_enabled: true",
-      "tools:",
-      "  - name: searchDocs",
-      "  - name: sendEmail",
+      "{",
+      '  "Version": "2012-10-17",',
+      '  "Statement": [{',
+      '    "Effect": "Allow",',
+      '    "Action": "iam:PassRole",',
+      '    "Resource": "*"',
+      "  }]",
+      "}",
     ].join("\n"),
-    emptyHint: "No file pasted. The UI stays in dry-run mode and only previews execution.",
+    emptyHint: "No IAM config imported. The dashboard shows a dry preview of the analysis pipeline.",
     safeguards: [
-      "Safe parsing only",
-      "Allowlisted schema keys",
-      "5 MB hard cap",
+      "Read-only parsing",
+      "No AWS API calls",
+      "Local graph build",
     ],
     allowsFileUpload: true,
-    fileAccept: ".yaml,.yml,.json,.txt",
+    fileAccept: ".json,.csv,.txt,.yaml,.yml",
     stepOutputs: [
       {
         step: "01",
-        title: "Direct prompt attack check",
+        title: "Static Policy Analysis",
         detail:
-          "Fires many tricky prompts to see whether the agent leaks hidden rules, changes persona, or obeys unsafe commands.",
+          "Evaluates IAM policies against Rhino Security Labs 16 known privilege escalation methods plus AWS managed policy risk patterns.",
       },
       {
         step: "02",
-        title: "RAG poisoning check",
+        title: "Graph Relationship Mapping",
         detail:
-          "Plants hostile instructions inside test documents and checks whether retrieved content can steer the agent off course.",
+          "Builds a Neo4j-compatible graph of users, roles, groups, and policies. Maps trust chains, role assumptions, and cross-account paths.",
       },
       {
         step: "03",
-        title: "Prompt leak check",
+        title: "Anomaly Detection",
         detail:
-          "Uses leak-focused questions like repeat-above prompts to see if private system instructions slip out.",
+          "Runs Node2vec embeddings and Local Outlier Factor on the IAM graph to surface structurally unusual permission clusters.",
       },
       {
         step: "04",
-        title: "Tool power check",
+        title: "Risk Score Computation",
         detail:
-          "Reviews each tool for access that feels too broad, like delete, write, or execute power when read-only should be enough.",
+          "Applies the hybrid quadratic formula — MAX(w₁S, w₂G, w₃T, w₄C) × 0.6 + √(w₁S² + w₂G² + w₃T² + w₄C²) × 0.4 — to produce a 0-100 severity score.",
       },
       {
         step: "05",
-        title: "Output safety check",
+        title: "Compliance Mapping",
         detail:
-          "Pushes XSS, shell, SQL, HTML, and risky markdown patterns to see whether unsafe output would pass through to users.",
+          "Auto-maps findings to SOC 2 (CC6.1, CC6.2), RBI (7.1, 7.2), and DPDP Act (Section 8) controls for audit readiness.",
+        href: "/findings",
+        ctaLabel: "View findings",
       },
       {
         step: "06",
-        title: "MCP exposure check",
+        title: "Report Generation",
         detail:
-          "Looks for public tool lists, dangerous tool names, prompt-poisoned descriptions, and weak CORS settings on MCP endpoints.",
-      },
-      {
-        step: "07",
-        title: "Compliance check",
-        detail:
-          "Checks for regulated-use flags, missing policy boundaries, retention gaps, and config claims that conflict with stated model limits or licenses.",
-      },
-      {
-        step: "08",
-        title: "Remediation plan",
-        detail:
-          "Builds a short fix list: tighten prompts, reduce permissions, sanitize outputs, and require stronger auth where needed.",
-        href: "/findings",
-        ctaLabel: "Open remediation",
-      },
-      {
-        step: "09",
-        title: "Report",
-        detail:
-          "Packages the scan summary into a clean report view so users can move from preview to findings and final report pages.",
+          "Packages the full analysis into a downloadable report with attack path diagrams, risk scores, and remediation priorities.",
         href: "/reports",
-        ctaLabel: "Open report",
+        ctaLabel: "Open reports",
       },
     ],
   },
   {
-    id: "endpoint",
+    id: "gcpIam",
     label: "Mode 2",
-    title: "Live endpoint",
-    format: "HTTP / HTTPS",
+    title: "GCP IAM Config",
+    format: "JSON / YAML",
     description:
-      "Paste an endpoint URL for a bounded scan flow with ownership and network safety checks.",
+      "Import GCP IAM bindings, service accounts, and custom roles. AuthMap maps the permission hierarchy and detects lateral movement paths.",
     coverageSummary:
-      "Best for runtime checks like prompt injection, prompt leaks, and output safety. Adds live signal to tool and MCP checks.",
-    inputLabel: "Endpoint input",
+      "Full coverage for GCP-specific escalation paths including service account impersonation, role binding abuse, and org-level policy gaps.",
+    inputLabel: "GCP IAM input",
     placeholder:
-      "Paste an HTTPS endpoint. Leave it empty to preview the UI without a live target.",
+      "Paste GCP IAM policy bindings, service account keys, or role definitions here.",
     sampleInput: [
-      "Target URL: https://agent.example.com/api/chat",
-      "Ownership confirmed: true",
-      "Request timeout: 30s",
+      "bindings:",
+      "  - role: roles/iam.serviceAccountTokenCreator",
+      "    members:",
+      "      - serviceAccount:dev-sa@project.iam.gserviceaccount.com",
+      "  - role: roles/owner",
+      "    members:",
+      "      - user:admin@company.com",
     ].join("\n"),
-    emptyHint: "No endpoint pasted. The UI shows a dry preview without any request activity.",
+    emptyHint: "No GCP config imported. The pipeline shows a dry preview without live data.",
     safeguards: [
-      "Strict URL validation",
-      "Private IP blocking",
-      "5 minute rate limit",
-    ],
-    stepOutputs: [
-      {
-        step: "01",
-        title: "Direct prompt attack check",
-        detail:
-          "Sends injection prompts to the live endpoint and asks a judge model whether the agent gave in.",
-      },
-      {
-        step: "02",
-        title: "RAG poisoning check",
-        detail:
-          "Tests whether retrieved documents can quietly override the agent when external knowledge is in play.",
-      },
-      {
-        step: "03",
-        title: "Prompt leak check",
-        detail:
-          "Runs leakage prompts to see whether the endpoint exposes hidden setup or internal instruction text.",
-      },
-      {
-        step: "04",
-        title: "Tool power check",
-        detail:
-          "Checks whether the endpoint appears to have more write, delete, or execute ability than its stated role needs.",
-      },
-      {
-        step: "05",
-        title: "Output safety check",
-        detail:
-          "Tries to provoke unsafe browser, shell, SQL, and HTML output that could become a real rendering issue.",
-      },
-      {
-        step: "06",
-        title: "MCP exposure check",
-        detail:
-          "Probes attached MCP surfaces for open tool access, risky names, and endpoint security gaps.",
-      },
-      {
-        step: "07",
-        title: "Compliance check",
-        detail:
-          "Flags endpoints that appear to serve regulated or restricted workflows without matching disclaimers, consent gates, or operator controls.",
-      },
-      {
-        step: "08",
-        title: "Remediation plan",
-        detail:
-          "Turns the scan into clear fixes that product teams can act on without reading raw payload details first.",
-        href: "/findings",
-        ctaLabel: "Open remediation",
-      },
-      {
-        step: "09",
-        title: "Report",
-        detail:
-          "Pushes the scan outcome into a shareable report view with the main findings, fixes, and next review steps.",
-        href: "/reports",
-        ctaLabel: "Open report",
-      },
-    ],
-  },
-  {
-    id: "code",
-    label: "Mode 3",
-    title: "Python code",
-    format: "Static analysis",
-    description:
-      "Paste Python agent code for AST-based structure review and suspicious import flagging.",
-    coverageSummary:
-      "Best for prompt extraction, excessive agency, MCP usage, and implementation-level output handling checks.",
-    inputLabel: "Python input",
-    placeholder:
-      "Paste Python source here. Leave it empty to preview the static analysis flow only.",
-    sampleInput: [
-      "from langchain.agents import AgentExecutor",
-      "tools = [search_tool, email_tool]",
-      "system_prompt = \"Respond safely\"",
-    ].join("\n"),
-    emptyHint: "No source pasted. The UI still shows the static-analysis pipeline in preview mode.",
-    safeguards: [
-      "AST parsing only",
-      "No exec or eval",
-      "Suspicious import flags",
+      "Read-only parsing",
+      "No GCP API calls",
+      "Local graph build",
     ],
     allowsFileUpload: true,
-    fileAccept: ".py,.txt,.md",
+    fileAccept: ".json,.yaml,.yml,.txt",
     stepOutputs: [
       {
         step: "01",
-        title: "Direct prompt attack check",
+        title: "Static Binding Analysis",
         detail:
-          "Maps prompt-handling code paths to see whether direct injection risks are likely before runtime even starts.",
+          "Evaluates GCP IAM bindings for overly permissive roles, service account key exposure, and org-level policy inheritance gaps.",
       },
       {
         step: "02",
-        title: "RAG poisoning check",
+        title: "Graph Relationship Mapping",
         detail:
-          "Looks for retrieval logic that could mistakenly trust document text as system-level instructions.",
+          "Builds a graph of service accounts, users, groups, and role bindings. Maps impersonation chains and cross-project access paths.",
       },
       {
         step: "03",
-        title: "Prompt leak check",
+        title: "Anomaly Detection",
         detail:
-          "Searches prompt templates, role text, and agent setup patterns that could expose hidden instructions.",
+          "Runs Node2vec embeddings and LOF on the GCP IAM graph to detect structurally unusual permission patterns and dormant admin accounts.",
       },
       {
         step: "04",
-        title: "Tool power check",
+        title: "Risk Score Computation",
         detail:
-          "Finds tool access, permission scope, and irreversible actions that look larger than the agent’s job requires.",
+          "Applies the hybrid quadratic formula to compute per-entity risk scores with weighted inputs from static, graph, temporal, and cost layers.",
       },
       {
         step: "05",
-        title: "Output safety check",
+        title: "Compliance Mapping",
         detail:
-          "Flags places where model output may reach a browser, terminal, or database without enough cleaning first.",
+          "Maps GCP-specific findings to SOC 2, RBI, and DPDP compliance controls with gap analysis for each framework.",
+        href: "/findings",
+        ctaLabel: "View findings",
       },
       {
         step: "06",
-        title: "MCP exposure check",
+        title: "Report Generation",
         detail:
-          "Checks whether connected MCP usage might expose tools, descriptions, or unauthenticated access routes.",
-      },
-      {
-        step: "07",
-        title: "Compliance check",
-        detail:
-          "Reviews hardcoded use cases, policy bypasses, and missing guardrails for regulated decisions or restricted domains.",
-      },
-      {
-        step: "08",
-        title: "Remediation plan",
-        detail:
-          "Summarizes the main fixes: safer prompt boundaries, smaller tool scope, cleaner output handling, and stricter access rules.",
-        href: "/findings",
-        ctaLabel: "Open remediation",
-      },
-      {
-        step: "09",
-        title: "Report",
-        detail:
-          "Assembles a readable report page with highlighted risks, reasoning, and next review checkpoints.",
+          "Generates a comprehensive report with GCP attack paths, risk heatmaps, and prioritized remediation steps.",
         href: "/reports",
-        ctaLabel: "Open report",
+        ctaLabel: "Open reports",
       },
     ],
   },
   {
-    id: "modelCard",
-    label: "Mode 4",
-    title: "Model card",
-    format: "Markdown / Text",
+    id: "costData",
+    label: "Mode 3",
+    title: "Cost data",
+    format: "CSV / JSON",
     description:
-      "Paste a model card or provider policy excerpt to review intended-use fit, limitations, provenance, and license terms.",
+      "Import AWS Cost Explorer or GCP Billing data. AuthMap correlates cloud spend with security risk to identify resources that are both expensive and dangerous.",
     coverageSummary:
-      "Best for the Compliance check. Adds policy context but cannot replace runtime evidence for injection or output tests.",
-    inputLabel: "Model card input",
+      "Enables the cost-security correlation layer (Layer C). Identifies zombie resources, unused admin-attached instances, and cost anomalies tied to risky IAM.",
+    inputLabel: "Cost data input",
     placeholder:
-      "Paste the model card, policy excerpt, or capability notes here. Leave it empty to preview the compliance flow.",
+      "Paste Cost Explorer CSV, GCP Billing JSON, or cost allocation tags here.",
     sampleInput: [
-      "Model: Claude Sonnet",
-      "Intended use: customer support summarization",
-      "Known limitations: may hallucinate dates and legal specifics",
-      "License: commercial use allowed with attribution requirements",
+      "resource_id,service,monthly_cost_usd,last_active",
+      "i-0a1b2c3d4e5f,EC2,847.20,2025-01-15",
+      "arn:aws:s3:::public-data-dump,S3,234.50,2026-06-01",
+      "sa-unused-admin@proj.iam,IAM,0.00,2024-08-22",
+    ].join("\n"),
+    emptyHint: "No cost data imported. The cost-security correlation layer remains in preview mode.",
+    safeguards: [
+      "No billing API calls",
+      "Statistical analysis only",
+      "Z-score anomaly detection",
+    ],
+    allowsFileUpload: true,
+    fileAccept: ".csv,.json,.txt",
+    stepOutputs: [
+      {
+        step: "01",
+        title: "Cost Normalization",
+        detail:
+          "Parses and normalizes cost data across AWS and GCP formats. Tags each resource with service type, cost tier, and last-active timestamp.",
+      },
+      {
+        step: "02",
+        title: "Zombie Resource Detection",
+        detail:
+          "Identifies resources with active cost footprint but no recent usage — EC2 instances, S3 buckets, and service accounts burning budget silently.",
+      },
+      {
+        step: "03",
+        title: "Cost Anomaly Scoring",
+        detail:
+          "Applies Statistical Process Control (Z-scores) to flag spending spikes that may indicate compromised resources or unauthorized provisioning.",
+      },
+      {
+        step: "04",
+        title: "Cost-Risk Correlation",
+        detail:
+          "Cross-references cost data with IAM risk scores. Generates the 4-quadrant scatter plot — Cost (X) vs Risk (Y) — highlighting expensive AND risky resources.",
+      },
+      {
+        step: "05",
+        title: "Waste-to-Risk Report",
+        detail:
+          "Produces actionable findings linking cloud cost waste to security exposure. Prioritizes resources that save money AND reduce attack surface.",
+        href: "/findings",
+        ctaLabel: "View findings",
+      },
+      {
+        step: "06",
+        title: "Executive Summary",
+        detail:
+          "Packages cost-security insights into a leadership-ready report showing ROI of security remediation through cost savings.",
+        href: "/reports",
+        ctaLabel: "Open reports",
+      },
+    ],
+  },
+  {
+    id: "auditLogs",
+    label: "Mode 4",
+    title: "Audit logs",
+    format: "JSON / CloudTrail",
+    description:
+      "Import CloudTrail or GCP Cloud Audit Logs. AuthMap applies temporal analysis to detect behavioral anomalies and unusual access patterns over time.",
+    coverageSummary:
+      "Enables the temporal analysis layer (Layer T). Isolation Forest on daily behavior features detects privilege usage spikes, off-hours access, and dormant-then-active patterns.",
+    inputLabel: "Audit log input",
+    placeholder:
+      "Paste CloudTrail events, GCP Audit Log entries, or access log JSON here.",
+    sampleInput: [
+      '{"eventName": "AssumeRole", "userIdentity": {"type": "IAMUser", "userName": "dev-intern"}, "sourceIPAddress": "203.0.113.50", "eventTime": "2026-06-20T03:14:00Z"}',
+      '{"eventName": "CreateAccessKey", "userIdentity": {"type": "IAMUser", "userName": "dev-intern"}, "eventTime": "2026-06-20T03:15:00Z"}',
     ].join("\n"),
     emptyHint:
-      "No model card pasted. The UI keeps the compliance lane in preview mode until policy text is provided.",
+      "No audit logs imported. The temporal analysis layer stays in preview mode until log data is provided.",
     safeguards: [
-      "Text-only review",
-      "No provider-side calls",
-      "Policy mismatch flags",
+      "Read-only parsing",
+      "No CloudWatch calls",
+      "Local temporal analysis",
     ],
     allowsFileUpload: true,
-    fileAccept: ".md,.txt,.json,.yaml,.yml",
+    fileAccept: ".json,.txt,.log,.csv",
     stepOutputs: [
       {
         step: "01",
-        title: "Direct prompt attack check",
+        title: "Log Ingestion & Parsing",
         detail:
-          "Cannot verify runtime prompt injection from a model card alone, so BoxAI marks this as unverified until endpoint or code evidence is added.",
+          "Normalizes CloudTrail and GCP Audit Log formats into a unified event stream. Extracts principal, action, resource, timestamp, and source IP.",
       },
       {
         step: "02",
-        title: "RAG poisoning check",
+        title: "Behavioral Baseline",
         detail:
-          "No live retrieval path exists in a model card, but stated retrieval features are noted so teams know when a config or endpoint test is still needed.",
+          "Builds per-identity behavioral profiles from daily features — API call frequency, unique actions, access hours, and resource diversity.",
       },
       {
         step: "03",
-        title: "Prompt leak check",
+        title: "Temporal Anomaly Detection",
         detail:
-          "Provider documentation can hint at exposure risk, but actual prompt extraction still requires endpoint or code validation.",
+          "Runs Isolation Forest on daily behavior features to flag unusual spikes — off-hours admin access, dormant accounts suddenly active, or rapid privilege changes.",
       },
       {
         step: "04",
-        title: "Tool power check",
+        title: "Attack Sequence Matching",
         detail:
-          "Reads declared tool or action scope in the card and flags gaps between marketing claims and required permission controls.",
+          "Correlates temporal anomalies with known privilege escalation sequences. Flags multi-step attack chains like recon → role assumption → key creation.",
       },
       {
         step: "05",
-        title: "Output safety check",
+        title: "Temporal Risk Scoring",
         detail:
-          "Model cards may mention unsafe content tendencies, but stored XSS, shell, and SQL behavior still need live or code-backed testing.",
+          "Feeds temporal signals into the hybrid quadratic risk formula as Layer T (20% weight). Updates per-identity risk scores with behavioral evidence.",
+        href: "/findings",
+        ctaLabel: "View findings",
       },
       {
         step: "06",
-        title: "MCP exposure check",
+        title: "Incident Timeline Report",
         detail:
-          "Checks whether the documentation declares connectors, tool servers, or external actions that need a deeper MCP review elsewhere.",
-      },
-      {
-        step: "07",
-        title: "Compliance check",
-        detail:
-          "Checks intended-use misalignment, ignored limitations, supply-chain provenance, and license restrictions so teams catch policy violations before deployment.",
-      },
-      {
-        step: "08",
-        title: "Remediation plan",
-        detail:
-          "Recommends narrowing use cases, documenting risk acceptance, switching models, or adding human review where policy limits are being stretched.",
-        href: "/findings",
-        ctaLabel: "Open remediation",
-      },
-      {
-        step: "09",
-        title: "Report",
-        detail:
-          "Packages the compliance posture, missing evidence, and follow-up validation requests into the final report view.",
+          "Generates a chronological incident report with annotated attack timelines, anomaly highlights, and recommended investigation steps.",
         href: "/reports",
-        ctaLabel: "Open report",
+        ctaLabel: "Open reports",
       },
     ],
   },
@@ -382,32 +321,24 @@ export const scanModes: ScanMode[] = [
 
 export const securityModules = [
   {
-    label: "Direct prompt injection",
-    summary: "Runtime attempts to override or hijack agent instructions.",
+    label: "IAM Graph Engine",
+    summary: "Interactive Cytoscape.js visualization of IAM entity relationships across AWS and GCP.",
   },
   {
-    label: "Indirect prompt injection",
-    summary: "Retrieved or embedded content that quietly steers the model.",
+    label: "Privilege Escalation Detection",
+    summary: "4-layer analysis: Static (40%) + Graph (30%) + Temporal (20%) + Cost (10%) scoring.",
   },
   {
-    label: "System prompt extraction",
-    summary: "Leaking hidden system instructions, rules, or role text.",
+    label: "Cost-Security Correlation",
+    summary: "Scatter-plot quadrant mapping of cloud spend against IAM risk scores.",
   },
   {
-    label: "Excessive agency checker",
-    summary: "Tools and actions that exceed the agent's stated purpose.",
+    label: "Compliance Mapping",
+    summary: "Auto-mapping to SOC 2, RBI, and DPDP Act frameworks with gap analysis.",
   },
   {
-    label: "Insecure output handling",
-    summary: "Unsafe model output reaching browsers, shells, or databases.",
-  },
-  {
-    label: "MCP server exposure",
-    summary: "Risky tool servers, open RPC surfaces, or poisoned tool metadata.",
-  },
-  {
-    label: "Compliance check",
-    summary: "Policy, intended-use, provenance, and license conflicts before deployment.",
+    label: "Hybrid Risk Scoring",
+    summary: "Quadratic formula combining worst-case and multi-factor compounding into 0-100 severity.",
   },
 ] as const;
 
@@ -415,56 +346,56 @@ export const moduleLabels = securityModules.map((module) => module.label);
 
 export const scanDetailCards = [
   {
-    label: "Default scan mode",
-    value: "Multi-input scan",
-    note: "Pick 1 to 4 inputs on the overview screen: config, endpoint, Python code, or model card.",
+    label: "Analysis scope",
+    value: "Multi-cloud IAM",
+    note: "Import up to 4 data sources: AWS IAM, GCP IAM, cost data, and audit logs for comprehensive coverage.",
   },
   {
-    label: "Execution type",
-    value: "Frontend dry run",
-    note: "The pipeline now shows nine visible stages, adding compliance review before remediation and final report handoff.",
+    label: "Detection layers",
+    value: "4-layer SGTC model",
+    note: "Static policy checks, graph-based anomalies, temporal behavioral analysis, and cost-security correlation.",
   },
   {
-    label: "Core guardrails",
-    value: "Parse-only, bounded, static",
-    note: "All four modes stay non-destructive and focus on bounded validation signals rather than live exploitation.",
+    label: "Risk formula",
+    value: "Hybrid quadratic scoring",
+    note: "MAX(worst factor) × 0.6 + √(sum of squares) × 0.4 prevents single-factor dilution while capturing compound risk.",
   },
 ];
 
 export const findingsSummary = [
   {
+    severity: "Critical",
+    title: "Admin privilege escalation path detected",
+    summary: "A chain of IAM permissions allows lateral movement from a low-privilege user to administrative access through role assumption or policy attachment.",
+  },
+  {
     severity: "High",
-    title: "Prompt injection resistance is unverified",
-    summary: "The scan flow keeps direct and indirect injection checks prominent in the output pipeline.",
+    title: "Cross-account role chain exploitable",
+    summary: "Trust policies enable cross-account role assumption without MFA enforcement, creating a potential lateral movement vector between AWS accounts.",
   },
   {
     severity: "Medium",
-    title: "Tool permissions need explicit review",
-    summary: "The agency checker remains visible because write, delete, and exec access need purpose alignment.",
+    title: "Unused admin keys with active cost footprint",
+    summary: "Service accounts or IAM users with admin-level access keys show no recent API activity but are attached to resources generating ongoing costs.",
   },
   {
     severity: "Medium",
-    title: "Unsafe output rendering needs guardrails",
-    summary: "Output handling stays in scope for browser, terminal, and SQL-shaped payloads.",
-  },
-  {
-    severity: "Medium",
-    title: "Compliance drift needs explicit review",
-    summary: "Model cards, licenses, and intended-use limits can conflict with what the product is actually shipping.",
+    title: "Compliance gap in access control mapping",
+    summary: "IAM configurations do not fully satisfy SOC 2 CC6.1 least-privilege requirements or RBI 7.1 access control mandates.",
   },
 ];
 
 export const reportSections = [
   {
     title: "Executive summary",
-    body: "A compact, frontend-only report surface that explains the scan mode, pipeline status, and high-level risk posture.",
+    body: "A leadership-ready overview of IAM risk posture, privilege escalation paths detected, cost-security correlation highlights, and compliance gap analysis.",
   },
   {
-    title: "Evidence bundle",
-    body: "A section reserved for payload traces, response excerpts, import flags, and tool manifests once backend data exists.",
+    title: "Attack path analysis",
+    body: "Detailed graph-based visualization of privilege escalation chains with per-path risk scores, affected entities, and exploitation difficulty ratings.",
   },
   {
-    title: "Recommended actions",
-    body: "A checklist-style area for tightening parsing, reducing tool access, sanitizing output, and gating MCP exposure.",
+    title: "Remediation roadmap",
+    body: "Prioritized action items: remove excessive permissions, rotate unused keys, enforce MFA on cross-account roles, and decommission zombie resources.",
   },
 ];

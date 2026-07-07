@@ -94,7 +94,7 @@ export function AccountDangerZone() {
     }
 
     const confirmed = window.confirm(
-      "Delete your BoxAI account permanently? This removes your Clerk identity and signs you out immediately.",
+      "Delete your AuthMap account permanently? This removes your Clerk identity and signs you out immediately.",
     );
 
     if (!confirmed) {
@@ -105,7 +105,7 @@ export function AccountDangerZone() {
 
     try {
       await deleteAccount();
-      localStorage.removeItem(`boxai:workspace:${user.id}`);
+      localStorage.removeItem(`authmap:workspace:${user.id}`);
       window.location.replace("/");
     } catch (error) {
       if (isReverificationCancelledError(error)) {
@@ -125,7 +125,7 @@ export function AccountDangerZone() {
           Danger zone
         </p>
         <p className="mt-2 max-w-2xl text-sm leading-7 text-slate-300">
-          Workspace drafts in this frontend are retained per signed-in account in this browser. Deleting the account removes the Clerk identity permanently.
+          Imported IAM configs and analysis state are retained per signed-in account in this browser. Deleting the account removes the Clerk identity permanently.
         </p>
       </div>
       <button

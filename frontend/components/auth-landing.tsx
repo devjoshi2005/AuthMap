@@ -18,7 +18,8 @@ export function AuthLanding({ isSignedIn = false }: AuthLandingProps) {
   const heroHref = effectiveIsSignedIn ? "/" : "/sign-up";
 
   return (
-    <main className="relative min-h-screen overflow-hidden text-white">
+    <main className="relative flex min-h-screen flex-col overflow-hidden text-white bg-[rgba(13,16,21,1)]">
+      {/* Animated background layers */}
       <div className="pointer-events-none absolute inset-0 opacity-65">
         <DeferredPrism
           animationType="rotate"
@@ -39,130 +40,102 @@ export function AuthLanding({ isSignedIn = false }: AuthLandingProps) {
       </div>
       <div className="pointer-events-none absolute inset-0 bg-[radial-gradient(circle_at_18%_14%,rgba(158,193,182,0.16),transparent_22%),radial-gradient(circle_at_82%_20%,rgba(203,142,119,0.15),transparent_20%),radial-gradient(circle_at_50%_38%,rgba(255,255,255,0.08),transparent_28%),linear-gradient(180deg,rgba(13,16,21,0.72),rgba(13,16,21,0.94))]" />
       <div className="pointer-events-none absolute inset-0 bg-[radial-gradient(circle_at_50%_55%,rgba(255,255,255,0.03),transparent_32%)] mix-blend-screen opacity-80" />
-      <section className="relative z-[1] mx-auto flex min-h-screen w-full max-w-7xl flex-col px-4 py-5 sm:px-8 sm:py-6 lg:px-12">
-        <nav className="mb-10 flex flex-col items-center justify-center gap-4 rounded-[2rem] border border-white/12 bg-[linear-gradient(180deg,rgba(8,10,14,0.96),rgba(13,16,21,0.92))] px-4 py-4 text-center shadow-[0_28px_72px_rgba(0,0,0,0.26)] sm:mb-12 sm:flex-row sm:justify-between sm:px-5 sm:py-3 sm:text-left">
-          <BrandLogo compact className="shrink-0 scale-[1.04] origin-center" />
-          <div className="flex flex-wrap items-center justify-center gap-3 rounded-[1.2rem] border border-white/8 bg-white/[0.03] p-1.5 sm:justify-end">
-            <Link
-              href={signInHref}
-              prefetch={false}
-              className="inline-flex items-stretch overflow-hidden rounded-[0.95rem] uppercase leading-none shadow-[0_10px_24px_rgba(0,0,0,0.22)] transition-transform hover:-translate-y-0.5"
-            >
-              <span
-                className="bg-white px-3 py-2 text-[0.78rem] font-black tracking-[-0.04em] text-[#0a0a0a]"
-                style={{ fontFamily: '"Helvetica Neue", Helvetica, Arial, sans-serif' }}
-              >
-                SIGN
-              </span>
-              <span
-                className="bg-[#0d1025] px-2.5 py-2 text-[0.78rem] font-black tracking-[-0.04em] text-white"
-                style={{ fontFamily: '"Helvetica Neue", Helvetica, Arial, sans-serif' }}
-              >
-                IN
-              </span>
-            </Link>
-            <Link
-              href={signUpHref}
-              prefetch={false}
-              className="inline-flex items-stretch overflow-hidden rounded-[0.95rem] uppercase leading-none shadow-[0_10px_24px_rgba(0,0,0,0.22)] transition-transform hover:-translate-y-0.5"
-            >
-              <span
-                className="bg-white px-3 py-2 text-[0.78rem] font-black tracking-[-0.04em] text-[#0a0a0a]"
-                style={{ fontFamily: '"Helvetica Neue", Helvetica, Arial, sans-serif' }}
-              >
-                SIGN
-              </span>
-              <span
-                className="bg-[#0d1025] px-2.5 py-2 text-[0.78rem] font-black tracking-[-0.04em] text-white"
-                style={{ fontFamily: '"Helvetica Neue", Helvetica, Arial, sans-serif' }}
-              >
-                UP
-              </span>
-            </Link>
-          </div>
-        </nav>
 
-        <div className="flex flex-1 items-center">
-          <div className="grid w-full gap-8 xl:grid-cols-[1.08fr_0.92fr] xl:items-end">
-            <div className="flex flex-col items-center space-y-7 text-center xl:items-start xl:text-left">
-              <div className="max-w-4xl space-y-5 xl:max-w-[52rem]">
+      {/* Main wrapper for absolute vertical centering */}
+      <div className="relative z-[1] flex flex-1 flex-col justify-center px-4 py-12 sm:px-8 lg:px-12">
+        <div className="mx-auto w-full max-w-7xl">
+          <div className="grid gap-12 lg:grid-cols-[1.1fr_0.9fr] lg:items-center xl:gap-20">
+            
+            {/* ─── LEFT COLUMN: Critical Info & Hero ─── */}
+            <div className="flex flex-col items-center space-y-8 text-center lg:items-start lg:text-left">
+              <div className="mb-2">
+                <BrandLogo size="xl" />
+              </div>
+
+              <div className="space-y-4">
                 <p className="font-[family:var(--font-plex-mono)] text-[0.72rem] font-medium uppercase tracking-[0.24em] text-[var(--accent-cyan)]">
-                  AI Agent Security Scanner
+                  IAM Attack Path Analyzer
                 </p>
-                <h1 className="auth-title-glow max-w-4xl text-4xl font-semibold leading-[0.92] tracking-[-0.06em] sm:text-5xl lg:text-[5.1rem]">
-                  Minimal control for agent risk, review, and release.
+                <h1 className="auth-title-glow max-w-2xl text-5xl font-semibold leading-[0.92] tracking-[-0.05em] sm:text-6xl lg:text-[4.8rem]">
+                  Map the invisible.
                 </h1>
-                <p className="max-w-3xl text-base leading-8 text-slate-300 sm:text-lg">
-                  BoxAI gives teams a calm front door for scan review, remediation, and controlled release. Sign in to enter the secured workspace and move through the full analyst path without visual clutter.
+                <p className="max-w-xl text-lg leading-8 text-slate-300">
+                  See every privilege escalation path across AWS &amp; GCP before attackers do. AuthMap ingests your cloud configurations to build a live relationship graph—exposing critical vulnerabilities and mapping risky permissions to your exact cloud costs.
                 </p>
               </div>
 
-              <div className="flex flex-wrap items-center justify-center gap-3 xl:justify-start">
-                <Link
-                  href={heroHref}
-                  prefetch={false}
-                  className="action-box action-box-cyan min-w-[12rem] px-5 py-3 text-sm font-semibold uppercase tracking-[0.18em] text-white"
-                >
-                  {effectiveIsSignedIn ? "Return Home" : "Enter Workspace"}
-                </Link>          
-              </div>
-
-              <div className="flex flex-wrap justify-center gap-2 text-[0.72rem] font-semibold uppercase tracking-[0.18em] text-white/86 xl:justify-start">
-                <span className="rounded-full border border-white/10 bg-white/[0.03] px-3 py-2">Threat containment</span>
-                <span className="rounded-full border border-white/10 bg-white/[0.03] px-3 py-2">Operator sign-off</span>
-                <span className="rounded-full border border-white/10 bg-white/[0.03] px-3 py-2">Controlled release</span>
+              {/* Added critical info layout matching user preference */}
+              <div className="grid w-full gap-4 sm:grid-cols-2 lg:max-w-2xl">
+                <div className="rounded-[1.4rem] border border-white/10 bg-white/[0.03] p-5 text-left transition hover:bg-white/[0.05]">
+                  <p className="font-[family:var(--font-plex-mono)] text-[0.62rem] font-medium uppercase tracking-[0.24em] text-[var(--accent-cyan)]">Graph Engine</p>
+                  <p className="mt-2 text-sm leading-6 text-slate-300">Interactive Neo4j &amp; Cytoscape.js network visualizing every IAM entity and trust chain.</p>
+                </div>
+                <div className="rounded-[1.4rem] border border-white/10 bg-white/[0.03] p-5 text-left transition hover:bg-white/[0.05]">
+                  <p className="font-[family:var(--font-plex-mono)] text-[0.62rem] font-medium uppercase tracking-[0.24em] text-[var(--accent-magenta)]">Priv-Esc Detection</p>
+                  <p className="mt-2 text-sm leading-6 text-slate-300">4-layer analysis (Static, Graph, Temporal, Cost) feeding a hybrid quadratic risk score.</p>
+                </div>
+                <div className="rounded-[1.4rem] border border-white/10 bg-white/[0.03] p-5 text-left transition hover:bg-white/[0.05] sm:col-span-2">
+                  <p className="font-[family:var(--font-plex-mono)] text-[0.62rem] font-medium uppercase tracking-[0.24em] text-[var(--accent-gold)]">Cost × Risk Correlation</p>
+                  <p className="mt-2 text-sm leading-6 text-slate-300">Scatter plot your cloud spend against IAM risk. Instantly locate resources that are burning budget AND exposing critical attack surface.</p>
+                </div>
               </div>
             </div>
 
-            <div className="mx-auto grid w-full max-w-xl gap-4 md:grid-cols-3 xl:mx-0 xl:max-w-none xl:grid-cols-1">
-              <article className="rounded-[1.8rem] border border-white/10 bg-[linear-gradient(180deg,rgba(255,255,255,0.05),rgba(255,255,255,0.02))] p-6 shadow-[0_18px_44px_rgba(0,0,0,0.16)]">
-                <p className="font-[family:var(--font-plex-mono)] text-[0.66rem] font-medium uppercase tracking-[0.24em] text-[var(--accent-cyan)]">Identity first</p>
-                <h2 className="mt-3 text-2xl font-semibold tracking-[-0.04em] text-white">Verified access</h2>
-                <p className="mt-3 text-sm leading-7 text-slate-300">Every analyst session starts behind account verification before scan details or findings become visible.</p>
-              </article>
-              <article className="rounded-[1.8rem] border border-white/10 bg-[linear-gradient(180deg,rgba(255,255,255,0.05),rgba(255,255,255,0.02))] p-6 shadow-[0_18px_44px_rgba(0,0,0,0.16)]">
-                <p className="font-[family:var(--font-plex-mono)] text-[0.66rem] font-medium uppercase tracking-[0.24em] text-[var(--accent-magenta)]">Readable flow</p>
-                <h2 className="mt-3 text-2xl font-semibold tracking-[-0.04em] text-white">One operating surface</h2>
-                <p className="mt-3 text-sm leading-7 text-slate-300">Inputs, scan details, findings, and reports stay inside one minimal shell instead of breaking into disconnected screens.</p>
-              </article>
-              <article className="rounded-[1.8rem] border border-white/10 bg-[linear-gradient(180deg,rgba(255,255,255,0.05),rgba(255,255,255,0.02))] p-6 shadow-[0_18px_44px_rgba(0,0,0,0.16)]">
-                <p className="font-[family:var(--font-plex-mono)] text-[0.66rem] font-medium uppercase tracking-[0.24em] text-[var(--accent-gold)]">Per-user state</p>
-                <h2 className="mt-3 text-2xl font-semibold tracking-[-0.04em] text-white">Return where you left off</h2>
-                <p className="mt-3 text-sm leading-7 text-slate-300">Scan drafts persist per signed-in account in this browser, so the workspace feels continuous across sessions.</p>
-              </article>
+            {/* ─── RIGHT COLUMN: Auth Box ─── */}
+            <div className="mx-auto flex w-full max-w-md flex-col items-center lg:mx-0 lg:max-w-none lg:items-end">
+              <div className="w-full max-w-md rounded-[2.5rem] border border-white/10 bg-[linear-gradient(180deg,rgba(255,255,255,0.05),rgba(255,255,255,0.01))] p-8 shadow-[0_20px_60px_rgba(0,0,0,0.3)] sm:p-10">
+                <p className="font-[family:var(--font-plex-mono)] text-[0.68rem] font-medium uppercase tracking-[0.24em] text-[var(--accent-cyan)]">
+                  Access Portal
+                </p>
+                <h2 className="mt-4 text-3xl font-semibold text-white">
+                  {effectiveIsSignedIn ? "Welcome back." : "Start mapping."}
+                </h2>
+                <p className="mt-3 text-base leading-7 text-slate-300">
+                  {effectiveIsSignedIn
+                    ? "Your analysis workspace is active. Resume your session."
+                    : "Create an account to scan your cloud environment and generate compliance-ready reports."}
+                </p>
+                <div className="mt-8 flex flex-col gap-4">
+                  <Link
+                    href={heroHref}
+                    prefetch={false}
+                    className="action-box action-box-cyan flex w-full items-center justify-center px-6 py-4 text-sm font-semibold uppercase tracking-[0.18em] text-white transition-transform hover:scale-[1.02]"
+                  >
+                    {effectiveIsSignedIn ? "Open Console" : "Sign Up Free"}
+                  </Link>
+                  <Link
+                    href={signInHref}
+                    prefetch={false}
+                    className="action-box action-box-ghost flex w-full items-center justify-center px-6 py-4 text-sm font-semibold uppercase tracking-[0.18em] text-white transition-transform hover:scale-[1.02]"
+                  >
+                    {effectiveIsSignedIn ? "Dashboard" : "Sign In"}
+                  </Link>
+                </div>
+
+                <div className="mt-10 pt-8 border-t border-white/10">
+                  <p className="font-[family:var(--font-plex-mono)] text-[0.65rem] uppercase tracking-[0.2em] text-slate-400">Security Scope</p>
+                  <ul className="mt-3 space-y-2 text-sm text-slate-300">
+                    <li className="flex items-center gap-2">
+                      <span className="text-[var(--accent-cyan)]">✓</span> SOC 2 &amp; RBI compliance
+                    </li>
+                    <li className="flex items-center gap-2">
+                      <span className="text-[var(--accent-cyan)]">✓</span> Zero agents required
+                    </li>
+                    <li className="flex items-center gap-2">
+                      <span className="text-[var(--accent-cyan)]">✓</span> In-browser graph rendering
+                    </li>
+                  </ul>
+                </div>
+              </div>
             </div>
+
           </div>
         </div>
+      </div>
 
-        <footer className="mt-10 border-t border-white/10 pt-6">
-          <div className="grid gap-6 text-center sm:grid-cols-2 lg:grid-cols-[1.2fr_0.8fr_0.8fr] lg:text-left">
-            <div className="mx-auto max-w-2xl lg:mx-0">
-              <p className="font-[family:var(--font-plex-mono)] text-[0.68rem] font-medium uppercase tracking-[0.24em] text-slate-400">
-                BoxAI overview
-              </p>
-              <p className="mt-3 text-sm leading-7 text-slate-300">
-                Frontend-only AI agent security scanner with protected access, readable scan flow, and controlled report review inside one product shell.
-              </p>
-            </div>
-            <div>
-              <p className="font-[family:var(--font-plex-mono)] text-[0.68rem] font-medium uppercase tracking-[0.24em] text-slate-400">
-                Product
-              </p>
-              <p className="mt-3 text-sm leading-7 text-slate-300">
-                Intake modes, scan details, findings, and reports tuned for fast analyst review.
-              </p>
-            </div>
-            <div>
-              <p className="font-[family:var(--font-plex-mono)] text-[0.68rem] font-medium uppercase tracking-[0.24em] text-slate-400">
-                Access
-              </p>
-              <p className="mt-3 text-sm leading-7 text-slate-300">
-                Sign in or create an account to enter the contained workspace and retain local scan state per user.
-              </p>
-            </div>
-          </div>
-        </footer>
-      </section>
+      <footer className="relative z-[1] w-full pb-6 text-center">
+        <p className="text-[0.7rem] uppercase tracking-widest text-slate-500">AuthMap — IAM Attack Path Analyzer with Cloud Cost Security</p>
+      </footer>
     </main>
   );
 }

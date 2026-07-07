@@ -40,20 +40,12 @@ export function AppShell({ children }: AppShellProps) {
             <Link href="/welcome" className="inline-flex">
               <BrandLogo linked={false} size="lg" />
             </Link>
-            <p className="mt-5 font-[family:var(--font-plex-mono)] text-[0.72rem] font-medium uppercase tracking-[0.24em] text-slate-400">
-              Command surface
+            <p className="mt-4 font-[family:var(--font-plex-mono)] text-[0.72rem] font-medium uppercase tracking-[0.24em] text-slate-400">
+              Security console
             </p>
-            <p className="mt-3 max-w-[38rem] text-[2.2rem] font-semibold leading-[0.94] tracking-[-0.05em] text-white sm:text-[2.8rem] lg:text-[3.35rem]">
-              AI agent security scanner for contained execution.
+            <p className="mt-2 max-w-[36rem] text-[1.8rem] font-semibold leading-[0.96] tracking-[-0.04em] text-white sm:text-[2.2rem] lg:text-[2.6rem]">
+              IAM attack path analyzer for AWS & GCP.
             </p>
-            <p className="mt-4 max-w-[38rem] text-base leading-8 text-slate-300 sm:text-lg">
-              OpenClaw powers the agent. BoxAI wraps it in a deliberate operating surface so teams can inspect exposure, triage findings, and release with one clean workflow.
-            </p>
-            <div className="mt-6 flex flex-wrap justify-center gap-2 text-[0.72rem] font-semibold uppercase tracking-[0.18em] text-white/88 xl:justify-start">
-              <span className="rounded-full border border-white/10 bg-white/[0.04] px-3 py-2">Threat containment</span>
-              <span className="rounded-full border border-white/10 bg-white/[0.04] px-3 py-2">Readable triage</span>
-              <span className="rounded-full border border-white/10 bg-white/[0.04] px-3 py-2">Controlled release</span>
-            </div>
           </div>
           <div className="mx-auto flex w-full max-w-[28rem] flex-col items-center space-y-4 xl:mx-0 xl:items-end">
             <div className="w-full rounded-[1.5rem] border border-white/10 bg-[rgba(255,255,255,0.03)] p-3 shadow-[0_14px_34px_rgba(0,0,0,0.14)]">
@@ -65,31 +57,13 @@ export function AppShell({ children }: AppShellProps) {
       </header>
       <div className="flex-1">{children}</div>
       <footer className="mt-12 border-t border-white/10 pt-6">
-        <div className="grid gap-6 pb-6 text-center sm:grid-cols-2 xl:grid-cols-[1.3fr_0.7fr_0.7fr] xl:text-left">
-          <div className="mx-auto max-w-2xl xl:mx-0">
-            <p className="font-[family:var(--font-plex-mono)] text-[0.68rem] font-medium uppercase tracking-[0.24em] text-slate-400">
-              Workspace information
-            </p>
-            <p className="mt-3 text-sm leading-7 text-slate-300">
-              BoxAI keeps the analyst workflow in one interface: capture inputs, inspect the staged pipeline, review findings, and move toward reporting without leaving the contained shell.
-            </p>
-          </div>
-          <div>
-            <p className="font-[family:var(--font-plex-mono)] text-[0.68rem] font-medium uppercase tracking-[0.24em] text-slate-400">
-              Session state
-            </p>
-            <p className="mt-3 text-sm leading-7 text-slate-300">
-              Drafts are retained locally per signed-in account in this browser for the frontend experience.
-            </p>
-          </div>
-          <div>
-            <p className="font-[family:var(--font-plex-mono)] text-[0.68rem] font-medium uppercase tracking-[0.24em] text-slate-400">
-              Scope
-            </p>
-            <p className="mt-3 text-sm leading-7 text-slate-300">
-              This environment demonstrates the product shell, auth flow, and operator review path with backend persistence.
-            </p>
-          </div>
+        <div className="flex flex-wrap items-center justify-between gap-4 pb-6">
+          <p className="text-sm text-slate-400">
+            AuthMap — IAM attack path analyzer · AWS + GCP · SOC 2 · RBI · DPDP
+          </p>
+          <p className="text-xs text-slate-500">
+            Session data persists per signed-in account.
+          </p>
         </div>
         <AccountDangerZone />
       </footer>

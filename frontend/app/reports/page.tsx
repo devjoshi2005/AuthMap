@@ -16,20 +16,20 @@ type ScanData = {
 const REPORT_TYPES = [
   {
     key: "compliance" as const,
-    label: "Compliance Report",
-    title: "Auditor-Grade Security Assessment",
+    label: "IAM Compliance Report",
+    title: "SOC 2 · RBI · DPDP Assessment",
     description:
-      "A professional PDF report covering the full scan summary: payloads tested, bypass metrics, risk posture, and an executive summary formatted for security auditors and engineering leadership.",
+      "A comprehensive PDF report mapping IAM findings to SOC 2 (CC6.1, CC6.2), RBI (7.1, 7.2), and DPDP Act (Section 8) controls. Includes gap analysis, risk scores, and audit-ready evidence.",
     accentClass: "action-box-cyan",
     filename: "compliance_report",
     icon: "📋",
   },
   {
     key: "remediation" as const,
-    label: "Remediation Roadmap",
-    title: "LLM-Assisted Fix Guidance",
+    label: "Attack Path Remediation",
+    title: "Prioritized Fix Roadmap",
     description:
-      "A professional PDF containing AI-generated remediation advice specific to findings detected during the scan. Includes prompt boundary hardening, output encoding, and input validation recommendations.",
+      "A prioritized remediation plan with specific IAM policy changes, permission removals, MFA enforcement recommendations, and zombie resource decommissioning steps — ordered by risk score impact.",
     accentClass: "action-box-gold",
     filename: "remediation_report",
     icon: "🛡️",
@@ -79,7 +79,7 @@ export default function ReportsPage() {
       const blob = await res.blob();
       const link = document.createElement("a");
       link.href = URL.createObjectURL(blob);
-      link.download = `boxai_${filename}_${latestScan.id}.pdf`;
+      link.download = `authmap_${filename}_${latestScan.id}.pdf`;
       link.click();
       URL.revokeObjectURL(link.href);
     } catch {
@@ -94,8 +94,8 @@ export default function ReportsPage() {
       <div className="space-y-8 pb-10">
         <ScreenHeader
           eyebrow="Reports"
-          title="Downloadable scan reports."
-          description="BoxAI generates two auditor-grade PDF documents after every scan: a full compliance assessment and an LLM-assisted remediation roadmap. Download both below."
+          title="IAM analysis reports."
+          description="AuthMap generates compliance-mapped PDF reports and prioritized remediation roadmaps after every analysis. Download both below."
         />
 
         {loading && (

@@ -6,8 +6,8 @@ import { clerkAppearance } from "@/lib/clerk-appearance";
 export default function SignUpPage() {
   return (
     <AuthPageShell
-      title="Create your BoxAI account"
-      description="Sign up to unlock the protected analyst workflow. BoxAI keeps scanning, remediation, and report review inside one controlled environment."
+      title="Create your AuthMap account"
+      description="Sign up to start mapping IAM relationships, detecting privilege escalation paths, and correlating cost waste with security risk across your cloud infrastructure."
       alternateHref="/sign-in"
       alternateLabel="Already registered? Log in"
     >

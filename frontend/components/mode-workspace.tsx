@@ -22,7 +22,7 @@ function createInitialFileNames() {
   >;
 }
 
-function sanitizeModelCardInput(value: string) {
+function sanitizeAuditLogInput(value: string) {
   return value
     .replace(/<script[\s\S]*?>[\s\S]*?<\/script>/gi, " ")
     .replace(/<style[\s\S]*?>[\s\S]*?<\/style>/gi, " ")
@@ -35,22 +35,22 @@ function sanitizeModelCardInput(value: string) {
 }
 
 function sanitizeInput(modeId: ModeId, value: string) {
-  if (modeId !== "modelCard") {
+  if (modeId !== "auditLogs") {
     return value;
   }
 
-  return sanitizeModelCardInput(value);
+  return sanitizeAuditLogInput(value);
 }
 
 function getAccentClass(modeId: ModeId) {
   switch (modeId) {
-    case "config":
+    case "awsIam":
       return "mode-accent-cyan";
-    case "endpoint":
+    case "gcpIam":
       return "mode-accent-gold";
-    case "code":
+    case "costData":
       return "mode-accent-magenta";
-    case "modelCard":
+    case "auditLogs":
       return "mode-accent-cyan";
     default:
       return "";
@@ -72,7 +72,7 @@ export function ModeWorkspace() {
   const [apiVerifyContext, setApiVerifyContext] = useState("");
   const fileInputRef = useRef<HTMLInputElement>(null);
 
-  const storageKey = user ? `boxai:workspace:${user.id}` : null;
+  const storageKey = user ? `authmap:workspace:${user.id}` : null;
 
   const activeMode =
     scanModes.find((mode) => mode.id === activeModeId) ?? scanModes[0];
@@ -115,7 +115,7 @@ export function ModeWorkspace() {
           setDrafts((current) => ({
             ...current,
             ...restoredDrafts,
-            modelCard: sanitizeInput("modelCard", restoredDrafts.modelCard ?? current.modelCard),
+            auditLogs: sanitizeInput("auditLogs", restoredDrafts.auditLogs ?? current.auditLogs),
           }));
         }
 
@@ -131,8 +131,8 @@ export function ModeWorkspace() {
   }, [storageKey]);
 
   useEffect(() => {
-    const savedKey = window.sessionStorage.getItem("boxai_api_key");
-    const savedProvider = window.sessionStorage.getItem("boxai_llm_provider");
+    const savedKey = window.sessionStorage.getItem("authmap_api_key");
+    const savedProvider = window.sessionStorage.getItem("authmap_llm_provider");
     if (savedKey && savedProvider) {
       setApiKey(savedKey);
       setLlmProvider(savedProvider as "openai" | "anthropic" | "gemini");
@@ -209,8 +209,8 @@ export function ModeWorkspace() {
       if (res.ok) {
         setApiKeyStatus("verified");
         setApiVerifyContext("API key validated successfully.");
-        window.sessionStorage.setItem("boxai_api_key", apiKey.trim());
-        window.sessionStorage.setItem("boxai_llm_provider", llmProvider);
+        window.sessionStorage.setItem("authmap_api_key", apiKey.trim());
+        window.sessionStorage.setItem("authmap_llm_provider", llmProvider);
       } else {
         setApiKeyStatus("error");
         setApiVerifyContext("Verification failed. Please check your key.");
@@ -264,14 +264,14 @@ export function ModeWorkspace() {
         <div className="flex flex-col gap-4 md:flex-row md:items-center md:justify-between">
           <div>
             <p className="font-[family:var(--font-plex-mono)] text-[0.72rem] font-medium uppercase tracking-[0.24em] text-slate-400">
-              Prerequisite
+              Configuration
             </p>
             <h2 className="mt-2 text-[2rem] font-semibold tracking-[-0.04em] text-white">
-              Remediation LLM Backend Configuration
+              Analysis Engine Backend Setup
             </h2>
           </div>
           <p className="max-w-md text-sm leading-6 text-slate-300">
-            A valid API key is required to generate the security remediation roadmap for this scan. We verify this via a secure backend HTTPS request to the provider. The key is securely held purely in browser session memory.
+            A valid API key powers AuthMap's graph analysis and remediation generation. We verify it via a secure backend request. The key lives only in browser session memory.
           </p>
         </div>
         
@@ -330,12 +330,12 @@ export function ModeWorkspace() {
               Start here
             </p>
             <h2 className="mt-2 text-[2rem] font-semibold tracking-[-0.04em] text-white">
-              Seal your OpenClaw agent inside BoxAI.
+              Feed your cloud. Watch the attack graph light up.
             </h2>
           </div>
           <p className="max-w-md text-sm leading-6 text-slate-300">
-            Choose one input type at a time in the box below. BoxAI keeps a short list of
-            which sources you already provided so you can build up to four inputs without crowding the screen.
+            Choose one data source at a time below. AuthMap tracks which sources you've imported
+            so you can build a complete multi-cloud picture across all four input types.
           </p>
         </div>
         <div className="grid gap-3 lg:grid-cols-4">
@@ -377,14 +377,14 @@ export function ModeWorkspace() {
           <div className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
             <div>
               <p className="font-[family:var(--font-plex-mono)] text-[0.68rem] font-medium uppercase tracking-[0.22em] text-slate-400">
-                Provided inputs
+                Imported sources
               </p>
               <p className="mt-2 text-sm leading-6 text-slate-300">
-                One input box stays active at a time. This list only records which source types you have already filled in.
+                One data source is active at a time. This list tracks which cloud configs you've already imported.
               </p>
             </div>
             <span className="rounded-full border border-white/10 bg-white/[0.04] px-3 py-1.5 text-xs font-medium text-white">
-              {loadedInputCount}/{MAX_INPUT_TYPES} inputs provided
+              {loadedInputCount}/{MAX_INPUT_TYPES} sources imported
             </span>
           </div>
           <div className="mt-4 flex flex-wrap gap-3">
@@ -457,10 +457,10 @@ export function ModeWorkspace() {
               />
             ) : null}
 
-            {activeMode.id === "endpoint" && (
+            {activeMode.id === "awsIam" && (
               <div className="mt-4 rounded-[1.2rem] border border-white/10 bg-white/[0.04] px-4 py-4 w-full">
                 <p className="font-[family:var(--font-plex-mono)] text-[0.68rem] font-medium uppercase tracking-[0.24em] text-slate-400">
-                  Scan Tier (Module 1)
+                  Analysis Depth
                 </p>
                 <div className="mt-3 flex flex-wrap gap-2">
                   <button
@@ -470,7 +470,7 @@ export function ModeWorkspace() {
                       scanTier === "small" ? "border-[var(--accent-gold)] bg-[var(--accent-gold)]/10 text-white" : "border-white/10 text-slate-400 hover:text-white hover:border-white/20"
                     }`}
                   >
-                    Small (Basic, ~100)
+                    Quick (Top risks, ~100 entities)
                   </button>
                   <button
                     type="button"
@@ -479,7 +479,7 @@ export function ModeWorkspace() {
                       scanTier === "avg" ? "border-[var(--accent-gold)] bg-[var(--accent-gold)]/10 text-white" : "border-white/10 text-slate-400 hover:text-white hover:border-white/20"
                     }`}
                   >
-                    Average (Standard, ~1k)
+                    Standard (Full graph, ~1k entities)
                   </button>
                   <button
                     type="button"
@@ -488,21 +488,21 @@ export function ModeWorkspace() {
                       scanTier === "big" ? "border-[var(--accent-gold)] bg-[var(--accent-gold)]/10 text-white" : "border-white/10 text-slate-400 hover:text-white hover:border-white/20"
                     }`}
                   >
-                    Big (Audit, ~15k)
+                    Deep (Audit-grade, ~15k entities)
                   </button>
                 </div>
               </div>
             )}
 
             <div className="mt-4 flex flex-wrap gap-3">
-              {activeMode.id === "endpoint" && (
+              {activeMode.id === "awsIam" && (
                 <button
                   type="button"
                   onClick={handleRunScan}
                   disabled={isScanning || !currentInput.trim()}
                   className="action-box action-box-gold px-4 py-3 text-sm font-medium text-white disabled:opacity-50"
                 >
-                  {isScanning ? "Running Scan..." : "Run Scan"}
+                  {isScanning ? "Analyzing..." : "Run Analysis"}
                 </button>
               )}
               <button
@@ -535,9 +535,9 @@ export function ModeWorkspace() {
               </p>
               <p className="mt-2 leading-6 text-slate-100">
                 {hasInput
-                  ? activeMode.id === "modelCard"
-                    ? "Model card captured and sanitized. Execution preview updates for this input type."
-                    : "User sample captured. Execution preview updates for this input type."
+                  ? activeMode.id === "auditLogs"
+                    ? "Audit logs captured and normalized. Analysis pipeline ready for this data source."
+                    : "Cloud config imported. Analysis pipeline updates for this data source."
                   : activeMode.emptyHint}
               </p>
             </div>
@@ -550,7 +550,7 @@ export function ModeWorkspace() {
           <div className="flex items-center justify-between gap-3 border-b border-white/10 pb-4">
             <div>
               <p className="text-sm font-medium text-slate-100">Output execution</p>
-              <p className="text-xs text-slate-300">Nine-step security pipeline for the active input</p>
+              <p className="text-xs text-slate-300">6-step analysis pipeline for the active data source</p>
             </div>
             <span className="rounded-full border border-[var(--accent-cyan)]/36 bg-[rgba(158,193,182,0.14)] px-3 py-1.5 text-xs font-semibold text-white shadow-[inset_0_1px_0_rgba(255,255,255,0.05)]">
               {loadedInputCount > 0 ? `${loadedInputCount} loaded` : "Dry preview"}
@@ -599,28 +599,28 @@ export function ModeWorkspace() {
                 Next screens
               </p>
               <h3 className="mt-2 text-2xl font-semibold tracking-[-0.04em] text-white">
-                Detail, finding, and report views.
+                Findings, compliance reports, and remediation plans.
               </h3>
             </div>
           </div>
           <div className="mt-5 flex flex-wrap gap-3">
             <Link
-              href="/scan-details"
+              href="/findings"
               className="action-box action-box-cyan px-4 py-3 text-sm font-medium text-white"
             >
-              Open scan details
-            </Link>
-            <Link
-              href="/findings"
-              className="action-box action-box-gold px-4 py-3 text-sm font-medium text-white"
-            >
-              Open findings
+              View IAM findings
             </Link>
             <Link
               href="/reports"
+              className="action-box action-box-gold px-4 py-3 text-sm font-medium text-white"
+            >
+              Download reports
+            </Link>
+            <Link
+              href="/"
               className="action-box action-box-magenta px-4 py-3 text-sm font-medium text-white"
             >
-              Open reports
+              Back to dashboard
             </Link>
           </div>
           <div className="mt-5 flex flex-wrap gap-2">

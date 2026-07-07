@@ -2,10 +2,12 @@
 
 import { useAuth } from "@clerk/nextjs";
 import { useEffect, useState } from "react";
+import Link from "next/link";
 import { AppShell } from "@/components/app-shell";
 import { ScreenHeader } from "@/components/screen-header";
 import { moduleLabels } from "@/lib/scan-data";
 
+/* ── Types ─────────────────────────────────────────────── */
 type ScanData = {
   id: number;
   user_id: string;
@@ -14,38 +16,67 @@ type ScanData = {
   findings_txt_path: string;
 };
 
+interface FindingsData {
+  entities: {
+    total: number;
+    users: number;
+    roles: number;
+    groups: number;
+    policies: number;
+    service_accounts?: number;
+  };
+  risk: {
+    admin_count: number;
+    overprivileged_count: number;
+    dormant_count: number;
+  };
+  attack_paths: {
+    total: number;
+    max_risk_score: number;
+    avg_risk_score: number;
+  };
+  compliance_violations: {
+    critical: number;
+    high: number;
+    medium: number;
+    low: number;
+  };
+  total_estimated_breach_cost: number;
+}
+
+/* ── Static cards data ─────────────────────────────────── */
 const STATIC_FINDINGS = [
   {
     severity: "Critical",
-    label: "Prompt Injection Bypass",
-    title: "Direct Instruction Override",
+    icon: "🔴",
+    label: "Privilege Escalation Path",
+    title: "Admin Access Chain Detected",
     summary:
-      "Payloads that explicitly override the system prompt — e.g. 'Ignore all previous instructions' — are tested. A Critical finding means the agent obeyed injected instructions instead of its guardrails.",
-    icon: "⚡",
+      "A chain of IAM permissions allows lateral movement from a low-privilege user to administrative access through role assumption, policy attachment, or service account impersonation.",
   },
   {
     severity: "High",
-    label: "Jailbreak Compliance",
-    title: "Role-play / Persona Bypass",
+    icon: "🟠",
+    label: "Cross-Account Exposure",
+    title: "Role Trust Policy Exploitable",
     summary:
-      "DAN-style and persona-shifting payloads are evaluated. A High finding means the agent adopted an unrestricted alternate persona, exposing unsafe capabilities.",
-    icon: "🔓",
+      "Trust policies enable cross-account role assumption without MFA enforcement, creating a lateral movement vector between AWS accounts or GCP projects.",
   },
   {
     severity: "Medium",
-    label: "Partial Defence Coverage",
-    title: "Selective Filtering Gap",
+    icon: "🟡",
+    label: "Cost-Risk Overlap",
+    title: "Zombie Admin Resources Active",
     summary:
-      "Some payloads were blocked but not all attack categories were consistently defended. Defensive coverage is incomplete — adversaries can iterate to find gaps.",
-    icon: "⚠️",
+      "IAM users or service accounts with admin-level permissions show no recent API activity but remain attached to resources generating ongoing cloud costs.",
   },
   {
     severity: "Low",
-    label: "Endpoint Reliability",
-    title: "Intermittent Error Responses",
+    icon: "🔵",
+    label: "Compliance Gap",
+    title: "SOC 2 / RBI Control Mismatch",
     summary:
-      "Timeouts, 5xx responses, or connection refusals were detected during the scan. These degrade security posture assessment confidence and may mask real vulnerabilities.",
-    icon: "🔌",
+      "IAM configurations do not fully satisfy SOC 2 CC6.1 least-privilege requirements or RBI 7.1 access control mandates. Manual review recommended before next audit.",
   },
 ];
 
@@ -64,22 +95,43 @@ function getSeverityColor(severity: string) {
   }
 }
 
+function formatCurrency(n: number): string {
+  if (n >= 1_000_000) return `$${(n / 1_000_000).toFixed(1)}M`;
+  if (n >= 1_000) return `$${(n / 1_000).toFixed(0)}K`;
+  return `$${n.toFixed(0)}`;
+}
+
+/* ── Component ─────────────────────────────────────────── */
 export default function FindingsPage() {
   const { getToken } = useAuth();
   const [latestScan, setLatestScan] = useState<ScanData | null>(null);
   const [loading, setLoading] = useState(true);
   const [downloading, setDownloading] = useState(false);
   const [error, setError] = useState("");
+  const [findings, setFindings] = useState<FindingsData | null>(null);
 
   useEffect(() => {
     async function fetchLatest() {
       try {
         const token = await getToken();
-        const res = await fetch("http://localhost:8000/scan/results/latest", {
-          headers: { Authorization: `Bearer ${token}` },
-        });
+        const headers = { Authorization: `Bearer ${token}` };
+
+        const res = await fetch("http://localhost:8000/scan/results/latest", { headers });
         if (res.ok) {
-          setLatestScan(await res.json());
+          const scan = await res.json();
+          setLatestScan(scan);
+
+          const scanId = scan.id ?? scan.scan_id;
+
+          // Fetch findings data
+          try {
+            const findingsRes = await fetch(`http://localhost:8000/scan/findings/${scanId}`, { headers });
+            if (findingsRes.ok) {
+              setFindings(await findingsRes.json());
+            }
+          } catch {
+            // findings data not available, continue with static cards
+          }
         } else if (res.status === 404) {
           setError("No scan results yet. Run a scan from the overview page first.");
         } else {
@@ -107,7 +159,7 @@ export default function FindingsPage() {
       const blob = await res.blob();
       const link = document.createElement("a");
       link.href = URL.createObjectURL(blob);
-      link.download = `boxai_findings_${latestScan.id}.txt`;
+      link.download = `authmap_findings_${latestScan.id}.txt`;
       link.click();
       URL.revokeObjectURL(link.href);
     } catch {
@@ -122,8 +174,8 @@ export default function FindingsPage() {
       <div className="space-y-8 pb-10">
         <ScreenHeader
           eyebrow="Findings"
-          title="Security findings from your scan."
-          description="Severity-classified findings surfaced by BoxAI's prompt injection scanner. Each category reflects a distinct attack vector. Download the full findings document for audit trail evidence."
+          title="IAM security findings from your analysis."
+          description="Risk-scored findings from AuthMap's 4-layer privilege escalation detection. Each category reflects a distinct IAM attack vector across your AWS and GCP environments."
         />
 
         {loading && (
@@ -138,30 +190,157 @@ export default function FindingsPage() {
           </div>
         )}
 
-        {/* Always render findings taxonomy cards */}
-        <section className="grid gap-5 sm:grid-cols-2 xl:grid-cols-4">
-          {STATIC_FINDINGS.map((item) => (
-            <article
-              key={item.severity}
-              className="rounded-[1.75rem] border border-white/10 bg-white/[0.03] p-6 shadow-[0_18px_50px_rgba(0,0,0,0.24)]"
-            >
-              <div className="flex items-start justify-between gap-3">
-                <span
-                  className={`rounded-full border px-3 py-1 text-xs font-semibold uppercase tracking-[0.22em] ${getSeverityColor(item.severity)}`}
-                >
-                  {item.severity}
-                </span>
-                <span className="text-xl">{item.icon}</span>
-              </div>
-              <p className="mt-4 font-[family:var(--font-plex-mono)] text-[0.65rem] font-medium uppercase tracking-[0.22em] text-slate-400">
-                {item.label}
+        {/* Scan Results — real data section */}
+        {!loading && findings && (
+          <section className="space-y-6">
+            <div>
+              <p className="font-[family:var(--font-plex-mono)] text-[0.68rem] font-medium uppercase tracking-[0.24em] text-slate-400">
+                Scan Results
               </p>
-              <h2 className="mt-2 text-lg font-semibold tracking-tight text-white">
-                {item.title}
-              </h2>
-              <p className="mt-3 text-sm leading-6 text-slate-300">{item.summary}</p>
-            </article>
-          ))}
+              <h2 className="mt-2 text-xl font-semibold text-white">Live analysis data</h2>
+            </div>
+
+            {/* Entity summary row */}
+            <div className="grid gap-3 sm:grid-cols-3 lg:grid-cols-5">
+              {[
+                { label: "Total Entities", value: findings.entities.total, color: "text-white" },
+                { label: "Users", value: findings.entities.users, color: "text-[var(--accent-cyan)]" },
+                { label: "Roles", value: findings.entities.roles, color: "text-[var(--accent-gold)]" },
+                { label: "Groups", value: findings.entities.groups, color: "text-slate-300" },
+                { label: "Policies", value: findings.entities.policies, color: "text-[var(--accent-magenta)]" },
+              ].map((item) => (
+                <div key={item.label} className="rounded-[1.4rem] border border-white/10 bg-white/[0.03] p-5">
+                  <p className="font-[family:var(--font-plex-mono)] text-[0.6rem] font-medium uppercase tracking-[0.22em] text-slate-400">
+                    {item.label}
+                  </p>
+                  <p className={`mt-2 text-2xl font-semibold ${item.color}`}>{item.value}</p>
+                </div>
+              ))}
+            </div>
+
+            {/* Risk summary */}
+            <div className="grid gap-3 sm:grid-cols-3">
+              <div className="rounded-[1.4rem] border border-red-500/20 bg-red-500/[0.04] p-5">
+                <p className="font-[family:var(--font-plex-mono)] text-[0.6rem] font-medium uppercase tracking-[0.22em] text-slate-400">
+                  Admin Entities
+                </p>
+                <p className="mt-2 text-2xl font-semibold text-red-400">{findings.risk.admin_count}</p>
+              </div>
+              <div className="rounded-[1.4rem] border border-orange-500/20 bg-orange-500/[0.04] p-5">
+                <p className="font-[family:var(--font-plex-mono)] text-[0.6rem] font-medium uppercase tracking-[0.22em] text-slate-400">
+                  Overprivileged
+                </p>
+                <p className="mt-2 text-2xl font-semibold text-orange-400">{findings.risk.overprivileged_count}</p>
+              </div>
+              <div className="rounded-[1.4rem] border border-yellow-500/20 bg-yellow-500/[0.04] p-5">
+                <p className="font-[family:var(--font-plex-mono)] text-[0.6rem] font-medium uppercase tracking-[0.22em] text-slate-400">
+                  Dormant Credentials
+                </p>
+                <p className="mt-2 text-2xl font-semibold text-yellow-400">{findings.risk.dormant_count}</p>
+              </div>
+            </div>
+
+            {/* Attack paths summary + compliance + breach cost */}
+            <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
+              {/* Attack paths */}
+              <div className="rounded-[1.75rem] border border-white/10 bg-white/[0.03] p-6 shadow-[0_18px_50px_rgba(0,0,0,0.24)]">
+                <p className="font-[family:var(--font-plex-mono)] text-[0.6rem] font-medium uppercase tracking-[0.22em] text-slate-400">
+                  Attack Paths
+                </p>
+                <p className="mt-3 text-3xl font-semibold text-white">{findings.attack_paths.total}</p>
+                <div className="mt-3 space-y-1">
+                  <div className="flex items-center justify-between text-xs">
+                    <span className="text-slate-400">Max risk score</span>
+                    <span className="font-semibold text-red-400">{findings.attack_paths.max_risk_score}</span>
+                  </div>
+                  <div className="flex items-center justify-between text-xs">
+                    <span className="text-slate-400">Avg risk score</span>
+                    <span className="font-semibold text-[var(--accent-gold)]">{findings.attack_paths.avg_risk_score.toFixed(1)}</span>
+                  </div>
+                </div>
+              </div>
+
+              {/* Compliance violations */}
+              <div className="rounded-[1.75rem] border border-white/10 bg-white/[0.03] p-6 shadow-[0_18px_50px_rgba(0,0,0,0.24)]">
+                <p className="font-[family:var(--font-plex-mono)] text-[0.6rem] font-medium uppercase tracking-[0.22em] text-slate-400">
+                  Compliance Violations
+                </p>
+                <div className="mt-3 grid grid-cols-2 gap-2">
+                  <div className="rounded-lg border border-red-500/20 bg-red-500/[0.06] p-2 text-center">
+                    <p className="text-lg font-semibold text-red-400">{findings.compliance_violations.critical}</p>
+                    <p className="text-[0.6rem] uppercase tracking-wider text-red-400/70">Critical</p>
+                  </div>
+                  <div className="rounded-lg border border-orange-500/20 bg-orange-500/[0.06] p-2 text-center">
+                    <p className="text-lg font-semibold text-orange-400">{findings.compliance_violations.high}</p>
+                    <p className="text-[0.6rem] uppercase tracking-wider text-orange-400/70">High</p>
+                  </div>
+                  <div className="rounded-lg border border-yellow-500/20 bg-yellow-500/[0.06] p-2 text-center">
+                    <p className="text-lg font-semibold text-yellow-400">{findings.compliance_violations.medium}</p>
+                    <p className="text-[0.6rem] uppercase tracking-wider text-yellow-400/70">Medium</p>
+                  </div>
+                  <div className="rounded-lg border border-blue-500/20 bg-blue-500/[0.06] p-2 text-center">
+                    <p className="text-lg font-semibold text-blue-400">{findings.compliance_violations.low}</p>
+                    <p className="text-[0.6rem] uppercase tracking-wider text-blue-400/70">Low</p>
+                  </div>
+                </div>
+              </div>
+
+              {/* Breach cost */}
+              <div className="rounded-[1.75rem] border border-white/10 bg-white/[0.03] p-6 shadow-[0_18px_50px_rgba(0,0,0,0.24)]">
+                <p className="font-[family:var(--font-plex-mono)] text-[0.6rem] font-medium uppercase tracking-[0.22em] text-slate-400">
+                  Est. Breach Cost
+                </p>
+                <p className="mt-3 text-3xl font-semibold text-[var(--accent-magenta)]">
+                  {formatCurrency(findings.total_estimated_breach_cost)}
+                </p>
+                <p className="mt-2 text-xs text-slate-500">Based on attack paths and compliance framework penalties</p>
+              </div>
+            </div>
+          </section>
+        )}
+
+        {/* No-scan banner when findings data missing but no error */}
+        {!loading && !findings && !error && (
+          <div className="rounded-[1.4rem] border border-[var(--accent-cyan)]/20 bg-[rgba(158,193,182,0.05)] p-5">
+            <p className="text-sm text-slate-300">
+              Run a scan from the{" "}
+              <Link href="/scan-wizard" className="font-semibold text-[var(--accent-cyan)] underline underline-offset-2">
+                Scan Wizard
+              </Link>{" "}
+              to see real-time findings data alongside these categories.
+            </p>
+          </div>
+        )}
+
+        {/* Finding Categories — static cards (always rendered) */}
+        <section>
+          <p className="mb-4 font-[family:var(--font-plex-mono)] text-[0.68rem] font-medium uppercase tracking-[0.24em] text-slate-400">
+            Finding Categories
+          </p>
+          <div className="grid gap-5 sm:grid-cols-2 xl:grid-cols-4">
+            {STATIC_FINDINGS.map((item) => (
+              <article
+                key={item.severity}
+                className="rounded-[1.75rem] border border-white/10 bg-white/[0.03] p-6 shadow-[0_18px_50px_rgba(0,0,0,0.24)]"
+              >
+                <div className="flex items-start justify-between gap-3">
+                  <span
+                    className={`rounded-full border px-3 py-1 text-xs font-semibold uppercase tracking-[0.22em] ${getSeverityColor(item.severity)}`}
+                  >
+                    {item.severity}
+                  </span>
+                  <span className="text-xl">{item.icon}</span>
+                </div>
+                <p className="mt-4 font-[family:var(--font-plex-mono)] text-[0.65rem] font-medium uppercase tracking-[0.22em] text-slate-400">
+                  {item.label}
+                </p>
+                <h2 className="mt-2 text-lg font-semibold tracking-tight text-white">
+                  {item.title}
+                </h2>
+                <p className="mt-3 text-sm leading-6 text-slate-300">{item.summary}</p>
+              </article>
+            ))}
+          </div>
         </section>
 
         {/* Download section — only when a scan exists */}

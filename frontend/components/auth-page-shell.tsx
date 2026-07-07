@@ -46,7 +46,7 @@ export function AuthPageShell({
             <BrandLogo size="lg" />
             <div className="space-y-4">
               <p className="font-[family:var(--font-plex-mono)] text-[0.72rem] font-medium uppercase tracking-[0.24em] text-[var(--accent-cyan)]">
-                Protected access
+                Secure access
               </p>
               <h1 className="max-w-2xl text-4xl font-semibold leading-[0.96] tracking-[-0.05em] text-white sm:text-5xl lg:text-[4.15rem] xl:max-w-[38rem]">
                 {title}
@@ -58,15 +58,15 @@ export function AuthPageShell({
             <div className="grid w-full gap-3 sm:grid-cols-3">
               <div className="rounded-[1.4rem] border border-white/10 bg-white/[0.03] p-4">
                 <p className="font-[family:var(--font-plex-mono)] text-[0.65rem] uppercase tracking-[0.24em] text-slate-400">Access</p>
-                <p className="mt-2 text-sm leading-6 text-slate-300">Identity first before entering the analyst workspace.</p>
+                <p className="mt-2 text-sm leading-6 text-slate-300">Identity verification before accessing your IAM analysis workspace.</p>
               </div>
               <div className="rounded-[1.4rem] border border-white/10 bg-white/[0.03] p-4">
                 <p className="font-[family:var(--font-plex-mono)] text-[0.65rem] uppercase tracking-[0.24em] text-slate-400">Review</p>
-                <p className="mt-2 text-sm leading-6 text-slate-300">Continue into scans, findings, and reports from one shell.</p>
+                <p className="mt-2 text-sm leading-6 text-slate-300">Explore IAM graphs, escalation paths, cost correlations, and compliance reports.</p>
               </div>
               <div className="rounded-[1.4rem] border border-white/10 bg-white/[0.03] p-4">
                 <p className="font-[family:var(--font-plex-mono)] text-[0.65rem] uppercase tracking-[0.24em] text-slate-400">Retention</p>
-                <p className="mt-2 text-sm leading-6 text-slate-300">Your scan workspace state remains tied to your signed-in account.</p>
+                <p className="mt-2 text-sm leading-6 text-slate-300">Your analysis workspace and imported IAM configs persist across sessions.</p>
               </div>
             </div>
           </div>

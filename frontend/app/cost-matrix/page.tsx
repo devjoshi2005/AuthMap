@@ -1,0 +1,293 @@
+"use client";
+
+import { useAuth } from "@clerk/nextjs";
+import { useEffect, useState } from "react";
+import Link from "next/link";
+import { AppShell } from "@/components/app-shell";
+import { ScreenHeader } from "@/components/screen-header";
+
+/* ── Types ─────────────────────────────────────────────── */
+interface CostPath {
+  path_id?: string;
+  path: string;
+  risk_score: number;
+  estimated_cost: number;
+  compliance: string[];
+  severity: string;
+}
+
+interface CompliancePenalty {
+  framework: string;
+  penalty_low: number;
+  penalty_high: number;
+}
+
+interface CostAnalysis {
+  total_estimated_breach_cost: number;
+  max_regulatory_penalty: number;
+  avg_per_record_cost: number;
+  paths: CostPath[];
+  compliance_penalties: CompliancePenalty[];
+}
+
+/* ── Helpers ───────────────────────────────────────────── */
+function formatCurrency(n: number): string {
+  if (n >= 1_000_000) return `$${(n / 1_000_000).toFixed(1)}M`;
+  if (n >= 1_000) return `$${(n / 1_000).toFixed(0)}K`;
+  return `$${n.toFixed(0)}`;
+}
+
+function severityColor(s: string) {
+  switch (s.toLowerCase()) {
+    case "critical": return "text-red-400 border-red-500/30 bg-red-500/10";
+    case "high": return "text-orange-400 border-orange-500/30 bg-orange-500/10";
+    case "medium": return "text-yellow-400 border-yellow-500/30 bg-yellow-500/10";
+    case "low": return "text-blue-400 border-blue-500/30 bg-blue-500/10";
+    default: return "text-slate-400 border-white/10 bg-white/5";
+  }
+}
+
+function classifyQuadrant(riskScore: number, cost: number, riskThreshold: number, costThreshold: number) {
+  const highRisk = riskScore >= riskThreshold;
+  const highCost = cost >= costThreshold;
+  if (highCost && highRisk) return { label: "High Cost · High Risk", color: "text-red-400", action: "Priority — fix now" };
+  if (!highCost && highRisk) return { label: "Low Cost · High Risk", color: "text-[var(--accent-magenta)]", action: "Fix permissions" };
+  if (highCost && !highRisk) return { label: "High Cost · Low Risk", color: "text-[var(--accent-gold)]", action: "Optimize spend" };
+  return { label: "Low Cost · Low Risk", color: "text-[var(--accent-cyan)]", action: "Safe — no action needed" };
+}
+
+/* ── Component ─────────────────────────────────────────── */
+export default function CostMatrixPage() {
+  const { getToken } = useAuth();
+  const [loading, setLoading] = useState(true);
+  const [noScan, setNoScan] = useState(false);
+  const [costData, setCostData] = useState<CostAnalysis | null>(null);
+
+  useEffect(() => {
+    async function load() {
+      try {
+        const token = await getToken();
+        const headers = { Authorization: `Bearer ${token}` };
+
+        const scanRes = await fetch("http://localhost:8000/scan/results/latest", { headers });
+        if (!scanRes.ok) {
+          setNoScan(true);
+          setLoading(false);
+          return;
+        }
+        const scan = await scanRes.json();
+        const scanId = scan.id ?? scan.scan_id;
+
+        const costRes = await fetch(`http://localhost:8000/scan/cost-analysis/${scanId}`, { headers });
+        if (costRes.ok) {
+          setCostData(await costRes.json());
+        } else {
+          setNoScan(true);
+        }
+      } catch {
+        setNoScan(true);
+      } finally {
+        setLoading(false);
+      }
+    }
+    load();
+  }, [getToken]);
+
+  /* ── Quadrant classification ───────────────────────── */
+  const riskThreshold = costData ? Math.max(50, ...costData.paths.map((p) => p.risk_score)) * 0.5 : 50;
+  const costThreshold = costData ? Math.max(10000, ...costData.paths.map((p) => p.estimated_cost)) * 0.5 : 10000;
+
+  const quadrants = costData
+    ? {
+        hh: costData.paths.filter((p) => p.risk_score >= riskThreshold && p.estimated_cost >= costThreshold),
+        lh: costData.paths.filter((p) => p.risk_score >= riskThreshold && p.estimated_cost < costThreshold),
+        hl: costData.paths.filter((p) => p.risk_score < riskThreshold && p.estimated_cost >= costThreshold),
+        ll: costData.paths.filter((p) => p.risk_score < riskThreshold && p.estimated_cost < costThreshold),
+      }
+    : null;
+
+  return (
+    <AppShell>
+      <div className="space-y-8 pb-10">
+        <ScreenHeader
+          eyebrow="Cost Matrix"
+          title="Cloud spend vs IAM risk — one scatter plot."
+          description="Four-quadrant Cost (X) × Risk (Y) visualization. Instantly spot resources that are expensive AND dangerous, so you save budget while reducing attack surface."
+        />
+
+        {loading && (
+          <div className="rounded-[1.6rem] border border-white/10 bg-white/[0.03] p-10 text-center">
+            <p className="animate-pulse text-sm text-slate-400">Loading cost analysis…</p>
+          </div>
+        )}
+
+        {!loading && noScan && (
+          <section className="rounded-[2rem] border border-white/10 bg-[linear-gradient(180deg,rgba(255,255,255,0.04),rgba(255,255,255,0.02))] p-6 shadow-[0_20px_50px_rgba(0,0,0,0.18)] md:p-8">
+            <div className="flex flex-col items-center justify-center gap-6 py-20">
+              <div className="flex h-24 w-24 items-center justify-center rounded-full border border-[var(--accent-gold)]/30 bg-[rgba(234,216,178,0.08)]">
+                <span className="text-4xl">📊</span>
+              </div>
+              <div className="text-center">
+                <h2 className="text-2xl font-semibold text-white">Cost-risk scatter plot loading zone</h2>
+                <p className="mt-3 max-w-lg text-sm leading-7 text-slate-300">
+                  Import cost data and run IAM analysis to populate the scatter plot. Each dot represents a cloud resource, positioned by monthly spend (X) and IAM risk score (Y).
+                </p>
+              </div>
+              <div className="grid w-full max-w-md grid-cols-2 gap-3 pt-4">
+                <div className="rounded-xl border border-white/10 bg-white/[0.03] p-4 text-center">
+                  <p className="font-[family:var(--font-plex-mono)] text-[0.6rem] uppercase tracking-[0.2em] text-slate-400">Quadrant</p>
+                  <p className="mt-1 text-sm font-semibold text-[var(--accent-cyan)]">Low cost · Low risk</p>
+                  <p className="mt-1 text-xs text-slate-400">Safe — no action needed</p>
+                </div>
+                <div className="rounded-xl border border-white/10 bg-white/[0.03] p-4 text-center">
+                  <p className="font-[family:var(--font-plex-mono)] text-[0.6rem] uppercase tracking-[0.2em] text-slate-400">Quadrant</p>
+                  <p className="mt-1 text-sm font-semibold text-[var(--accent-gold)]">High cost · Low risk</p>
+                  <p className="mt-1 text-xs text-slate-400">Optimize spend</p>
+                </div>
+                <div className="rounded-xl border border-white/10 bg-white/[0.03] p-4 text-center">
+                  <p className="font-[family:var(--font-plex-mono)] text-[0.6rem] uppercase tracking-[0.2em] text-slate-400">Quadrant</p>
+                  <p className="mt-1 text-sm font-semibold text-[var(--accent-magenta)]">Low cost · High risk</p>
+                  <p className="mt-1 text-xs text-slate-400">Fix permissions</p>
+                </div>
+                <div className="rounded-xl border border-white/10 bg-white/[0.03] p-4 text-center">
+                  <p className="font-[family:var(--font-plex-mono)] text-[0.6rem] uppercase tracking-[0.2em] text-slate-400">Quadrant</p>
+                  <p className="mt-1 text-sm font-semibold text-red-400">High cost · High risk</p>
+                  <p className="mt-1 text-xs text-slate-400">Priority — fix now</p>
+                </div>
+              </div>
+              <Link
+                href="/scan-wizard"
+                className="action-box action-box-gold px-5 py-2.5 text-sm font-semibold text-white"
+              >
+                Launch Scan Wizard →
+              </Link>
+            </div>
+          </section>
+        )}
+
+        {!loading && costData && (
+          <>
+            {/* Summary cards */}
+            <section className="grid gap-4 sm:grid-cols-3">
+              <div className="rounded-[1.75rem] border border-white/10 bg-white/[0.03] p-6 shadow-[0_18px_50px_rgba(0,0,0,0.24)]">
+                <p className="font-[family:var(--font-plex-mono)] text-[0.6rem] font-medium uppercase tracking-[0.22em] text-slate-400">
+                  Total Estimated Breach Cost
+                </p>
+                <p className="mt-3 text-3xl font-semibold text-[var(--accent-magenta)]">
+                  {formatCurrency(costData.total_estimated_breach_cost)}
+                </p>
+              </div>
+              <div className="rounded-[1.75rem] border border-white/10 bg-white/[0.03] p-6 shadow-[0_18px_50px_rgba(0,0,0,0.24)]">
+                <p className="font-[family:var(--font-plex-mono)] text-[0.6rem] font-medium uppercase tracking-[0.22em] text-slate-400">
+                  Maximum Regulatory Penalty
+                </p>
+                <p className="mt-3 text-3xl font-semibold text-red-400">
+                  {formatCurrency(costData.max_regulatory_penalty)}
+                </p>
+              </div>
+              <div className="rounded-[1.75rem] border border-white/10 bg-white/[0.03] p-6 shadow-[0_18px_50px_rgba(0,0,0,0.24)]">
+                <p className="font-[family:var(--font-plex-mono)] text-[0.6rem] font-medium uppercase tracking-[0.22em] text-slate-400">
+                  Average Per-Record Cost
+                </p>
+                <p className="mt-3 text-3xl font-semibold text-[var(--accent-gold)]">
+                  ${costData.avg_per_record_cost.toFixed(2)}
+                </p>
+              </div>
+            </section>
+
+            {/* Per-path cost table */}
+            {costData.paths.length > 0 && (
+              <section className="rounded-[1.75rem] border border-white/10 bg-white/[0.03] p-6 shadow-[0_18px_50px_rgba(0,0,0,0.24)]">
+                <p className="font-[family:var(--font-plex-mono)] text-[0.68rem] font-medium uppercase tracking-[0.24em] text-slate-400">
+                  Per-Path Cost Breakdown
+                </p>
+                <div className="mt-4 overflow-x-auto">
+                  <table className="w-full text-sm">
+                    <thead>
+                      <tr className="border-b border-white/10 text-left">
+                        <th className="pb-3 pr-4 font-medium text-slate-400">Path</th>
+                        <th className="pb-3 pr-4 font-medium text-slate-400">Risk</th>
+                        <th className="pb-3 pr-4 font-medium text-slate-400">Est. Cost</th>
+                        <th className="pb-3 pr-4 font-medium text-slate-400">Compliance</th>
+                        <th className="pb-3 font-medium text-slate-400">Severity</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {costData.paths.map((p, i) => (
+                        <tr key={i} className="border-b border-white/5">
+                          <td className="py-3 pr-4 text-white max-w-[200px] truncate" title={p.path}>
+                            {p.path}
+                          </td>
+                          <td className="py-3 pr-4 font-semibold text-white">{p.risk_score}</td>
+                          <td className="py-3 pr-4 font-semibold text-[var(--accent-gold)]">
+                            {formatCurrency(p.estimated_cost)}
+                          </td>
+                          <td className="py-3 pr-4 text-slate-300">
+                            {p.compliance.length > 0 ? p.compliance.join(", ") : "—"}
+                          </td>
+                          <td className="py-3">
+                            <span className={`rounded-full border px-2.5 py-0.5 text-xs font-semibold uppercase tracking-wider ${severityColor(p.severity)}`}>
+                              {p.severity}
+                            </span>
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              </section>
+            )}
+
+            {/* Compliance penalty section */}
+            {costData.compliance_penalties && costData.compliance_penalties.length > 0 && (
+              <section className="rounded-[1.75rem] border border-white/10 bg-white/[0.03] p-6 shadow-[0_18px_50px_rgba(0,0,0,0.24)]">
+                <p className="font-[family:var(--font-plex-mono)] text-[0.68rem] font-medium uppercase tracking-[0.24em] text-slate-400">
+                  Compliance Penalty Ranges
+                </p>
+                <div className="mt-4 grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
+                  {costData.compliance_penalties.map((cp) => (
+                    <div key={cp.framework} className="rounded-xl border border-white/10 bg-white/[0.03] p-4">
+                      <p className="text-sm font-semibold text-white">{cp.framework}</p>
+                      <div className="mt-2 flex items-baseline gap-1.5">
+                        <span className="text-lg font-semibold text-[var(--accent-magenta)]">{formatCurrency(cp.penalty_low)}</span>
+                        <span className="text-xs text-slate-500">—</span>
+                        <span className="text-lg font-semibold text-red-400">{formatCurrency(cp.penalty_high)}</span>
+                      </div>
+                      <p className="mt-1 text-xs text-slate-500">Potential penalty range</p>
+                    </div>
+                  ))}
+                </div>
+              </section>
+            )}
+
+            {/* Quadrant display */}
+            {quadrants && costData.paths.length > 0 && (
+              <section className="rounded-[1.75rem] border border-white/10 bg-white/[0.03] p-6 shadow-[0_18px_50px_rgba(0,0,0,0.24)]">
+                <p className="font-[family:var(--font-plex-mono)] text-[0.68rem] font-medium uppercase tracking-[0.24em] text-slate-400">
+                  Quadrant Classification
+                </p>
+                <div className="mt-4 grid gap-3 sm:grid-cols-2">
+                  {[
+                    { key: "hh" as const, label: "High Cost · High Risk", color: "text-red-400", borderColor: "border-red-500/30", action: "Priority — fix now", paths: quadrants.hh },
+                    { key: "lh" as const, label: "Low Cost · High Risk", color: "text-[var(--accent-magenta)]", borderColor: "border-[var(--accent-magenta)]/30", action: "Fix permissions", paths: quadrants.lh },
+                    { key: "hl" as const, label: "High Cost · Low Risk", color: "text-[var(--accent-gold)]", borderColor: "border-[var(--accent-gold)]/30", action: "Optimize spend", paths: quadrants.hl },
+                    { key: "ll" as const, label: "Low Cost · Low Risk", color: "text-[var(--accent-cyan)]", borderColor: "border-[var(--accent-cyan)]/30", action: "Safe — no action needed", paths: quadrants.ll },
+                  ].map((q) => (
+                    <div key={q.key} className={`rounded-xl border ${q.borderColor} bg-white/[0.02] p-4`}>
+                      <p className={`text-sm font-semibold ${q.color}`}>{q.label}</p>
+                      <p className="mt-1 text-xs text-slate-500">{q.action}</p>
+                      <p className="mt-2 text-2xl font-semibold text-white">{q.paths.length}</p>
+                      <p className="text-xs text-slate-400">
+                        {q.paths.length === 1 ? "path" : "paths"}
+                      </p>
+                    </div>
+                  ))}
+                </div>
+              </section>
+            )}
+          </>
+        )}
+      </div>
+    </AppShell>
+  );
+}

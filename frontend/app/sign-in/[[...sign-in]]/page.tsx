@@ -6,8 +6,8 @@ import { clerkAppearance } from "@/lib/clerk-appearance";
 export default function SignInPage() {
   return (
     <AuthPageShell
-      title="Return to the sealed workspace"
-      description="Authenticate before entering BoxAI. Once inside, the scan workspace, findings, and reports stay behind a signed-in boundary."
+      title="Return to the AuthMap console"
+      description="Sign in to access your IAM attack path analysis, privilege escalation findings, and compliance reports. Your workspace state persists across sessions."
       alternateHref="/sign-up"
       alternateLabel="Need an account? Create one"
     >
