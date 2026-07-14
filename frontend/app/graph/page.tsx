@@ -35,7 +35,11 @@ interface GraphData {
 }
 
 interface AttackPath {
-  path: string[];
+  path?: string[];
+  path_nodes?: {
+    nodes: string[];
+    types?: string[];
+  };
   risk_score: number;
   description?: string;
 }
