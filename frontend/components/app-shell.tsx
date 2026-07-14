@@ -1,8 +1,9 @@
 "use client";
 
-import { useUser } from "@clerk/nextjs";
+import { useUser, useAuth } from "@clerk/nextjs";
 import Link from "next/link";
-import type { ReactNode } from "react";
+import { useRouter } from "next/navigation";
+import { useEffect, type ReactNode } from "react";
 
 import { AccountControls, AccountDangerZone } from "@/components/account-controls";
 import { BrandLogo } from "@/components/brand-logo";
@@ -30,6 +31,19 @@ function getAccountLabel(user: UserResource) {
 
 export function AppShell({ children }: AppShellProps) {
   const { user } = useUser();
+  const { isLoaded, userId } = useAuth();
+  const router = useRouter();
+  
+  useEffect(() => {
+    if (isLoaded && !userId) {
+      router.replace("/");
+    }
+  }, [isLoaded, userId, router]);
+
+  if (isLoaded && !userId) {
+    return null;
+  }
+
   const accountLabel = getAccountLabel(user);
 
   return (

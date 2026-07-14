@@ -1,28 +1,275 @@
-
-
 import math
 import uuid
-from datetime import datetime, timezone
+import json
+from datetime import datetime, timezone, timedelta
 from typing import Dict, List, Any, Optional, Tuple
-
-from supabase import create_client, Client
+import numpy as np
+from sklearn.ensemble import IsolationForest
+from sklearn.neighbors import LocalOutlierFactor
+import networkx as nx
+from node2vec import Node2Vec
+from database import PostgresClient
 from neo4j import GraphDatabase
-
 from iam_scanner import IAMScanner, EntityType, PermissionClassifier
 from breach_cost_estimator import BreachCostEstimator, ServiceType, Region, ComplianceFramework, DataSensitivity
 
 
-class ScanOrchestrator:
-    """Orchestrates the full scan pipeline: Scanner → Neo4j → Supabase."""
+class TemporalAnalyzer:
+    def __init__(self, contamination: float = 0.05, random_state: int = 42):
+        self.contamination = contamination
+        self.random_state = random_state
+        self.model: Optional[IsolationForest] = None
+        self.is_fitted = False
 
-    def __init__(self, supabase_url: str, supabase_key: str,
+    def _extract_features(self, events: List[Dict]) -> np.ndarray:
+        if not events:
+            return np.array([])
+
+        events_sorted = sorted(events, key=lambda x: x.get('event_time', ''))
+
+        features = []
+        for i, event in enumerate(events_sorted):
+            event_time = self._parse_timestamp(event.get('event_time', ''))
+
+            hour = event_time.hour if event_time else 12
+
+            day_of_week = event_time.weekday() if event_time else 0
+
+            principal = event.get('username', event.get('principal_email', 'unknown'))
+            event_count_24h = sum(
+                1 for e in events_sorted[max(0, i-50):i]
+                if self._is_within_24h(e.get('event_time', ''), event.get('event_time', ''))
+                and e.get('username', e.get('principal_email', '')) == principal
+            )
+
+            principal_events = [
+                e for e in events_sorted[:i+1]
+                if e.get('username', e.get('principal_email', '')) == principal
+            ]
+            services = set()
+            for e in principal_events:
+                raw = e.get('raw_event', {})
+                if isinstance(raw, str):
+                    try:
+                        raw = json.loads(raw)
+                    except:
+                        raw = {}
+                svc = raw.get('serviceName', raw.get('eventSource', 'unknown'))
+                services.add(svc)
+            unique_services = len(services)
+
+            failed_attempts = sum(1 for e in principal_events if 'PERMISSION_DENIED' in str(e.get('raw_event', '')))
+
+            if len(principal_events) > 1:
+                last_event = principal_events[-2]
+                last_time = self._parse_timestamp(last_event.get('event_time', ''))
+                if event_time and last_time:
+                    days_since = (event_time - last_time).days
+                else:
+                    days_since = 0
+            else:
+                days_since = 999  
+
+            features.append([
+                hour,
+                day_of_week,
+                min(event_count_24h, 100),  # Cap at 100
+                min(unique_services, 50),   # Cap at 50
+                min(failed_attempts, 20),   # Cap at 20
+                min(days_since, 365)        # Cap at 365
+            ])
+
+        return np.array(features)
+
+    def _parse_timestamp(self, ts_str) -> Optional[datetime]:
+        if isinstance(ts_str, datetime):
+            return ts_str
+        if not ts_str or ts_str in ('N/A', 'never', ''):
+            return None
+
+        formats = [
+            '%Y-%m-%dT%H:%M:%S.%fZ',
+            '%Y-%m-%dT%H:%M:%SZ',
+            '%Y-%m-%dT%H:%M:%S.%f%z',
+            '%Y-%m-%dT%H:%M:%S%z',
+            '%Y-%m-%d %H:%M:%S',
+        ]
+
+        for fmt in formats:
+            try:
+                return datetime.strptime(ts_str, fmt)
+            except ValueError:
+                continue
+
+        try:
+            return datetime.fromisoformat(ts_str.replace('Z', '+00:00'))
+        except:
+            return None
+
+    def _is_within_24h(self, ts1: str, ts2: str) -> bool:
+        dt1 = self._parse_timestamp(ts1)
+        dt2 = self._parse_timestamp(ts2)
+        if not dt1 or not dt2:
+            return False
+        return abs((dt1 - dt2).total_seconds()) <= 86400
+
+
+
+    def fit(self, events: List[Dict]):
+        features = self._extract_features(events)
+
+        if len(features) < 10:
+            # Not enough data for ML — use heuristic scoring
+            self.is_fitted = False
+            return self
+
+        self.model = IsolationForest(
+            contamination=self.contamination,
+            random_state=self.random_state,
+            n_estimators=100,
+            max_samples='auto'
+        )
+        self.model.fit(features)
+        self.is_fitted = True
+        return self
+
+    def predict(self, events: List[Dict]) -> List[Tuple[bool, float]]:
+        features = self._extract_features(events)
+
+        if len(features) == 0:
+            return []
+
+        if not self.is_fitted or self.model is None:
+            # Heuristic fallback: flag off-hours, weekends, burst activity
+            results = []
+            for feat in features:
+                hour, day, count_24h, unique_svc, failed, days_since = feat
+
+                score = 0.5  
+
+                # Off-hours (22:00-06:00) = +0.2
+                if hour < 6 or hour >= 22:
+                    score += 0.2
+
+                # Weekend (5=Sat, 6=Sun) = +0.15
+                if day >= 5:
+                    score += 0.15
+
+                # Burst activity (>10 events in 24h) = +0.15
+                if count_24h > 10:
+                    score += 0.15
+
+                # Service enumeration (>5 unique) = +0.1
+                if unique_svc > 5:
+                    score += 0.1
+
+                # Failed attempts (>0) = +0.1
+                if failed > 0:
+                    score += 0.1
+
+                # Dormant reactivation (>30 days) = +0.2
+                if days_since > 30:
+                    score += 0.2
+
+                is_anomaly = score > 0.7
+                results.append((is_anomaly, min(score, 1.0)))
+
+            return results
+
+        predictions = self.model.predict(features)  # -1 = anomaly, 1 = normal
+        scores = self.model.decision_function(features)  # Negative means more anomalous
+
+        results = []
+        for pred, score in zip(predictions, scores):
+            is_anomaly = bool(pred == -1)
+            # Normalize score in range of 0-1
+            normalized_score = float(1.0 - (score + 0.5)) 
+            normalized_score = max(0.0, min(1.0, normalized_score))
+            results.append((is_anomaly, normalized_score))
+
+        return results
+
+    def calculate_temporal_risk_score(self, events: List[Dict]) -> float:
+        if not events:
+            return 0.0
+
+        self.fit(events)
+        predictions = self.predict(events)
+
+        if not predictions:
+            return 0.0
+
+        # Calculate weighted score
+        anomaly_count = sum(1 for is_anom, _ in predictions if is_anom)
+        avg_score = sum(score for _, score in predictions) / len(predictions)
+        max_score = max(score for _, score in predictions)
+
+        # 40% average anomaly score + 40% max score + 20% anomaly ratio
+        anomaly_ratio = anomaly_count / len(predictions)
+
+        risk_score = (avg_score * 40) + (max_score * 40) + (anomaly_ratio * 20)
+        return min(100.0, risk_score)
+
+
+class ScanOrchestrator:
+
+    def __init__(self, postgres_uri: str,
                  neo4j_uri: str, neo4j_user: str, neo4j_password: str):
-        self.supabase: Client = create_client(supabase_url, supabase_key)
-        self.neo4j = GraphDatabase.driver(neo4j_uri, auth=(neo4j_user, neo4j_password))
+        self.supabase = PostgresClient(postgres_uri)
         self.neo4j_uri = neo4j_uri
         self.neo4j_user = neo4j_user
         self.neo4j_password = neo4j_password
+        self.neo4j = GraphDatabase.driver(neo4j_uri, auth=(neo4j_user, neo4j_password))
         self.cost_estimator = BreachCostEstimator()
+        self.temporal_analyzer = TemporalAnalyzer(contamination=0.1)
+
+    def verify_neo4j_connection(self):
+        try:
+            self.neo4j.verify_connectivity()
+        except Exception as e:
+            raise Exception(f"Failed to connect to Neo4j at {self.neo4j_uri}: {str(e)}")
+
+    def ensure_user_exists(self, clerk_id: str):
+        res = self.supabase.table('users').select('clerk_id').eq('clerk_id', clerk_id).execute()
+        if not res.data:
+            self.supabase.table('users').insert({
+                'clerk_id': clerk_id,
+                'email': f'{clerk_id}@placeholder.com'
+            }).execute()
+
+    def ensure_csp_credential(self, clerk_id: str, csp_target: str, 
+                              aws_access: Optional[str] = None, aws_secret: Optional[str] = None, aws_region: Optional[str] = None,
+                              gcp_project: Optional[str] = None, gcp_json: Optional[str] = None) -> str:
+        res = self.supabase.table('csp_credentials').select('id').eq('clerk_id', clerk_id).eq('csp_type', csp_target).execute()
+        
+        cred_data = {
+            'clerk_id': clerk_id,
+            'csp_type': csp_target,
+            'label': f'Auto-created {csp_target} credentials',
+            'is_active': True
+        }
+        
+        if csp_target.lower() == 'aws' and aws_access:
+            cred_data.update({
+                'aws_access_key_id': aws_access,
+                'aws_secret_access_key': aws_secret,
+                'aws_region': aws_region
+            })
+        elif csp_target.lower() == 'gcp' and gcp_project:
+            cred_data.update({
+                'gcp_project_id': gcp_project,
+                'gcp_credentials_json': gcp_json
+            })
+            
+        if res.data:
+            cred_id = res.data[0]['id']
+            self.supabase.table('csp_credentials').update(cred_data).eq('id', cred_id).execute()
+            return cred_id
+        else:
+            cred_id = str(uuid.uuid4())
+            cred_data['id'] = cred_id
+            self.supabase.table('csp_credentials').insert(cred_data).execute()
+            return cred_id
 
     def create_scan_record(self, clerk_id: str, credential_id: str, scan_name: str,
                            scan_type: str, csp_target: str,
@@ -46,13 +293,19 @@ class ScanOrchestrator:
 
         self.supabase.table('iam_scans').insert(data).execute()
         return scan_id
+    @staticmethod
+    def _map_compliance(c: str) -> str:
+        c = c.upper()
+        if 'PCI' in c and 'DSS' in c:
+            return 'PCI DSS'
+        if 'ISO' in c and '27001' in c:
+            return 'ISO27001'
+        return c
 
-    
     def run_scan(self, scan_id: str, clerk_id: str, aws_access_key: str = None,
                  aws_secret_key: str = None, aws_region: str = 'us-east-1',
                  gcp_sa_json: str = None, gcp_project_id: str = None,
                  selected_compliances: List[str] = None):
-        """Run the full scan pipeline."""
 
         if selected_compliances is None:
             selected_compliances = ['SOC2']
@@ -64,32 +317,33 @@ class ScanOrchestrator:
         )
 
         try:
-            # --- AWS Scan ---
             if aws_access_key and aws_secret_key:
                 self._update_phase(scan_id, 'discovery', 25)
                 aws_graph = scanner.scan_aws(
                     access_key=aws_access_key,
                     secret_key=aws_secret_key,
                     region=aws_region,
-                    selected_compliances=selected_compliances
+                    selected_compliances=selected_compliances,
+                    scan_id=scan_id
                 )
                 if aws_graph.stats.get('error'):
                     raise Exception(f"AWS scan failed: {aws_graph.stats['error']}")
                 self._store_entities(scan_id, clerk_id, aws_graph)
-                self._store_temporal_events(scan_id, clerk_id, aws_graph)
+                self._store_temporal_events_aws(scan_id, clerk_id, aws_graph)
                 self._update_phase(scan_id, 'discovery', 50)
 
-            # --- GCP Scan ---
             if gcp_sa_json:
                 self._update_phase(scan_id, 'discovery', 75)
                 gcp_graph = scanner.scan_gcp(
                     service_account_json=gcp_sa_json,
                     project_id=gcp_project_id,
-                    selected_compliances=selected_compliances
+                    selected_compliances=selected_compliances,
+                    scan_id=scan_id
                 )
                 if gcp_graph.stats.get('error'):
                     raise Exception(f"GCP scan failed: {gcp_graph.stats['error']}")
                 self._store_entities(scan_id, clerk_id, gcp_graph)
+                self._store_temporal_events_gcp(scan_id, clerk_id, gcp_graph, gcp_sa_json, gcp_project_id)
                 self._update_phase(scan_id, 'discovery', 100)
 
             scanner.close()
@@ -100,22 +354,29 @@ class ScanOrchestrator:
             self._update_scan_status(scan_id, 'failed', str(e))
             raise
 
- 
     def _store_entities(self, scan_id: str, clerk_id: str, graph):
-        """Store graph nodes into scan_entities table (chunked to 500)."""
 
         entities_to_insert = []
 
         for node in graph.nodes:
-            # Only store types that exist in scan_entities table
             if not EntityType.is_schema_entity(node['type']):
                 continue
+
+            attached_policies = [e['target'] for e in graph.edges if e.get('source') == node.get('id') and e.get('type') == 'ATTACHED_TO']
+            member_of_groups = [e['target'] for e in graph.edges if e.get('source') == node.get('id') and e.get('type') == 'MEMBER_OF']
+            assumed_by_roles = [e['source'] for e in graph.edges if e.get('target') == node.get('id') and e.get('type') == 'CAN_ASSUME']
+
+            type_str = node['type'].upper()
+            if type_str == 'SERVICEACCOUNT':
+                type_str = 'SERVICE_ACCOUNT'
+            elif type_str == 'PERMISSIONSET':
+                type_str = 'PERMISSION_SET'
 
             entity = {
                 'id': str(uuid.uuid4()),
                 'scan_id': scan_id,
                 'clerk_id': clerk_id,
-                'entity_type': EntityType[node['type']].to_schema_type(),
+                'entity_type': EntityType[type_str].to_schema_type(),
                 'entity_arn': node.get('id'),
                 'entity_name': node.get('name'),
                 'entity_id': node['props'].get('user_id') or node['props'].get('role_id') or node['props'].get('group_id'),
@@ -125,8 +386,9 @@ class ScanOrchestrator:
                 'properties': node.get('props', {}),
                 'permissions': node['props'].get('permissions', []),
                 'permissions_count': node['props'].get('permission_count', 0),
-                'attached_policies': node['props'].get('attached_policy_count', 0),
-                'member_of_groups': node['props'].get('group_count', 0),
+                'attached_policies': attached_policies,
+                'member_of_groups': member_of_groups,
+                'assumed_by_roles': assumed_by_roles,
                 'static_risk_score': node['props'].get('risk_score', 0),
                 'static_risk_factors': {
                     'is_admin': node.get('is_admin', False),
@@ -140,7 +402,7 @@ class ScanOrchestrator:
             }
             entities_to_insert.append(entity)
 
-        # BATCH INSERT: Chunk to 500 to avoid Supabase limits
+        # for Inserting,Chunk to 500 to avoid Supabase limits
         CHUNK_SIZE = 500
         for i in range(0, len(entities_to_insert), CHUNK_SIZE):
             chunk = entities_to_insert[i:i + CHUNK_SIZE]
@@ -148,8 +410,8 @@ class ScanOrchestrator:
 
         print(f"Stored {len(entities_to_insert)} entities in {math.ceil(len(entities_to_insert)/CHUNK_SIZE)} batches")
 
-    def _store_temporal_events(self, scan_id: str, clerk_id: str, graph):
-        """Store CloudTrail events in temporal_events table."""
+    def _store_temporal_events_aws(self, scan_id: str, clerk_id: str, graph):
+        """Store AWS CloudTrail events in temporal_events table."""
         events_to_insert = []
 
         for node in graph.nodes:
@@ -175,12 +437,117 @@ class ScanOrchestrator:
                 chunk = events_to_insert[i:i + CHUNK_SIZE]
                 self.supabase.table('temporal_events').insert(chunk).execute()
 
+    def _store_temporal_events_gcp(self, scan_id: str, clerk_id: str, graph,
+                                    gcp_sa_json: str, gcp_project_id: str):
+        
+        import os
+        from google.oauth2 import service_account as gcp_service_account
+        from google.cloud import logging as cloud_logging
+
+        events_to_insert = []
+
+        try:
+            if os.path.exists(gcp_sa_json):
+                with open(gcp_sa_json, 'r') as f:
+                    creds_info = json.load(f)
+            else:
+                creds_info = json.loads(gcp_sa_json)
+
+            project_id = gcp_project_id or creds_info.get('project_id')
+            credentials = gcp_service_account.Credentials.from_service_account_info(
+                creds_info,
+                scopes=['https://www.googleapis.com/auth/cloud-platform']
+            )
+
+            client = cloud_logging.Client(project=project_id, credentials=credentials)
+
+            start_time = datetime.now(timezone.utc) - timedelta(days=7)
+            start_time_str = start_time.isoformat().replace('+00:00', 'Z')
+
+            filter_str = (
+                f'timestamp >= "{start_time_str}" AND '
+                'protoPayload.@type="type.googleapis.com/google.cloud.audit.AuditLog" AND ('
+                'protoPayload.methodName:SetIamPolicy OR '
+                'protoPayload.methodName="google.iam.admin.v1.CreateServiceAccountKey" OR '
+                'protoPayload.methodName="google.iam.admin.v1.DeleteServiceAccountKey" OR '
+                'protoPayload.methodName="google.iam.admin.v1.CreateServiceAccount" OR '
+                'protoPayload.methodName="google.iam.admin.v1.DeleteServiceAccount"'
+                ')'
+            )
+
+            entries = client.list_entries(filter_=filter_str, order_by=cloud_logging.DESCENDING, page_size=1000)
+
+            for entry in entries:
+                payload = entry.payload if hasattr(entry, 'payload') else {}
+
+                proto = payload.get('protoPayload', {})
+                auth_info = proto.get('authenticationInfo', {})
+                request_meta = proto.get('requestMetadata', {})
+
+                principal_email = auth_info.get('principalEmail', 'unknown')
+                method_name = proto.get('methodName', 'unknown')
+                resource_name = proto.get('resourceName', 'unknown')
+                caller_ip = request_meta.get('callerIp', 'unknown')
+
+                status = proto.get('status', {})
+                is_denied = status.get('code') == 7 or 'PERMISSION_DENIED' in str(status)
+
+                event = {
+                    'id': str(uuid.uuid4()),
+                    'scan_id': scan_id,
+                    'clerk_id': clerk_id,
+                    'entity_type': 'service_account' if 'serviceAccount' in principal_email else 'user',
+                    'event_type': 'policy_attached' if 'SetIamPolicy' in method_name else 'permission_used',
+                    'event_name': method_name,
+                    'event_time': entry.timestamp.isoformat() if entry.timestamp else datetime.now(timezone.utc).isoformat(),
+                    'event_source': 'gcp_audit_log',
+                    'raw_event': {
+                        'principal_email': principal_email,
+                        'method_name': method_name,
+                        'resource_name': resource_name,
+                        'caller_ip': caller_ip,
+                        'permission_denied': is_denied,
+                        'service_name': proto.get('serviceName', 'unknown'),
+                        'authorization_info': proto.get('authorizationInfo', []),
+                        'policy_delta': proto.get('serviceData', {}).get('policyDelta', {})
+                    }
+                }
+                events_to_insert.append(event)
+
+            print(f"GCP Audit Logs: Collected {len(events_to_insert)} IAM events")
+
+        except Exception as e:
+            print(f"Warning: Could not fetch GCP Audit Logs: {e}")
+
+        for node in graph.nodes:
+            if node['type'] != 'Event' or node.get('provider') != 'gcp':
+                continue
+
+            event = {
+                'id': str(uuid.uuid4()),
+                'scan_id': scan_id,
+                'clerk_id': clerk_id,
+                'entity_type': 'user',
+                'event_type': 'login',
+                'event_name': node.get('name'),
+                'event_time': node['props'].get('event_time'),
+                'event_source': 'gcp_audit_log',
+                'raw_event': node['props'].get('raw_event', {})
+            }
+            events_to_insert.append(event)
+
+        if events_to_insert:
+            CHUNK_SIZE = 500
+            for i in range(0, len(events_to_insert), CHUNK_SIZE):
+                chunk = events_to_insert[i:i + CHUNK_SIZE]
+                self.supabase.table('temporal_events').insert(chunk).execute()
+
     def run_graph_analysis(self, scan_id: str) -> List[Dict]:
         """Run shortest path, centrality, and anomaly detection in Neo4j."""
         self._update_phase(scan_id, 'graph_building', 50)
 
         with self.neo4j.session() as session:
-            # Find all admin roles
+            # Find all admin roles (AWS + GCP)
             admins = session.run("""
                 MATCH (r:Entity {scan_id: $scan_id, type: 'Role', is_admin: true})
                 RETURN r.id AS admin_id, r.name AS admin_name
@@ -204,34 +571,44 @@ class ScanOrchestrator:
 
                 paths.extend([dict(record) for record in result])
 
+            # Also find GCP ServiceAccount → Role paths
+            gcp_paths = session.run("""
+                MATCH (sa:Entity {scan_id: $scan_id, type: 'ServiceAccount'})
+                MATCH (r:Entity {scan_id: $scan_id, type: 'Role', is_admin: true})
+                MATCH p = shortestPath((sa)-[*..10]->(r))
+                RETURN sa.id AS source, sa.name AS source_name,
+                       r.id AS target, r.name AS target_name,
+                       [node IN nodes(p) | node.id] AS path_nodes,
+                       [node IN nodes(p) | node.type] AS path_types,
+                       length(p) AS path_length
+            """, scan_id=scan_id)
+
+            paths.extend([dict(record) for record in gcp_paths])
+
         self._update_phase(scan_id, 'graph_building', 100)
         return paths
 
     def create_attack_paths(self, scan_id: str, clerk_id: str, paths: List[Dict],
-                            selected_compliances: List[str],
-                            region_name: str = 'INDIA',
-                            annual_revenue: float = None):
+                            selected_compliances: List[str], region_name: str = 'INDIA', annual_revenue: float = None):
         """Create attack path records with corrected cost estimation."""
 
-        # Map region string to Region enum
-        region_enum = Region[region_name.upper()] if region_name.upper() in Region.__members__ else Region.GLOBAL
-
         paths_to_insert = []
+        analyses_to_insert = []
+
+        lof_scores = self._precompute_graph_lof(paths)
 
         for path in paths:
             path_entities = self._get_path_entities(scan_id, path['path_nodes'])
 
             static_score = self._calculate_static_score(path_entities)
 
-            graph_score = self._calculate_graph_score(path)
+            graph_score = self._calculate_graph_score(path, lof_scores)
 
             temporal_score = self._calculate_temporal_score(scan_id, path['source'])
 
             detected_services = self._detect_services_from_path(path_entities)
-
             service_type = self._map_to_service_type(detected_services)
 
-            # Normalize compliance names (PCI-DSS → PCI_DSS)
             frameworks = []
             for fw in selected_compliances:
                 fw_normalized = fw.upper().replace('-', '_').replace(' ', '_')
@@ -240,7 +617,11 @@ class ScanOrchestrator:
 
             data_sensitivity = self._infer_sensitivity(detected_services)
 
-            # Run cost estimator
+            try:
+                region_enum = Region[region_name.upper()]
+            except KeyError:
+                region_enum = Region.GLOBAL
+
             cost_estimate = self.cost_estimator.estimate(
                 service=service_type,
                 region=region_enum,
@@ -252,14 +633,27 @@ class ScanOrchestrator:
 
             cost_score = self._calculate_cost_score(cost_estimate.estimated_total_breach_cost)
 
-            # --- Hybrid Risk Score (SGTC formula) ---
             hybrid_score = self._calculate_hybrid_risk(static_score, graph_score, temporal_score, cost_score)
 
-            # Build cost breakdown with service context
+            if hybrid_score >= 80:
+                risk_severity = 'critical'
+            elif hybrid_score >= 60:
+                risk_severity = 'high'
+            elif hybrid_score >= 40:
+                risk_severity = 'medium'
+            else:
+                risk_severity = 'low'
+
             cost_breakdown = cost_estimate.to_dict()['cost_breakdown']
             cost_breakdown['detected_services'] = detected_services
             cost_breakdown['service_type_used'] = service_type.value
             cost_breakdown['data_sensitivity'] = data_sensitivity.name
+
+            source_uuid = next((e['id'] for e in path_entities if e['entity_arn'] == path['source']), None)
+            target_uuid = next((e['id'] for e in path_entities if e['entity_arn'] == path['target']), None)
+            
+            source_uuid = source_uuid or str(uuid.uuid4())
+            target_uuid = target_uuid or str(uuid.uuid4())
 
             path_record = {
                 'id': str(uuid.uuid4()),
@@ -269,8 +663,8 @@ class ScanOrchestrator:
                 'path_description': f"Privilege escalation path of length {path['path_length']}",
                 'path_nodes': {'nodes': path['path_nodes'], 'types': path.get('path_types', [])},
                 'path_length': path['path_length'],
-                'source_entity_id': path['source'],
-                'target_entity_id': path['target'],
+                'source_entity_id': source_uuid,
+                'target_entity_id': target_uuid,
                 'source_name': path['source_name'],
                 'target_name': path['target_name'],
                 'target_permission': 'admin',
@@ -287,18 +681,22 @@ class ScanOrchestrator:
                 'remediation_status': 'open'
             }
             paths_to_insert.append(path_record)
+            analyses_to_insert.extend(self._create_cost_analyses(scan_id, clerk_id, path_record['id'], cost_estimate, frameworks))
 
-            # --- Create cost_analyses for each compliance ---
-            self._create_cost_analyses(scan_id, clerk_id, path_record['id'], cost_estimate, frameworks)
-
-        # Batch insert attack_paths
         if paths_to_insert:
             CHUNK_SIZE = 500
             for i in range(0, len(paths_to_insert), CHUNK_SIZE):
                 chunk = paths_to_insert[i:i + CHUNK_SIZE]
                 self.supabase.table('attack_paths').insert(chunk).execute()
 
+        if analyses_to_insert:
+            CHUNK_SIZE = 500
+            for i in range(0, len(analyses_to_insert), CHUNK_SIZE):
+                chunk = analyses_to_insert[i:i + CHUNK_SIZE]
+                self.supabase.table('cost_analyses').insert(chunk).execute()
+
         return len(paths_to_insert)
+
 
     def _create_cost_analyses(self, scan_id: str, clerk_id: str, path_id: str,
                               cost_estimate, compliance_frameworks: List[ComplianceFramework]):
@@ -311,9 +709,10 @@ class ScanOrchestrator:
                 'scan_id': scan_id,
                 'clerk_id': clerk_id,
                 'path_id': path_id,
-                'compliance_framework': framework.value,
+                'compliance_framework': self._map_compliance(framework.value),
                 'cost_model_version': 'v2.0',
                 'total_estimated_cost': cost_estimate.estimated_total_breach_cost,
+                'regulatory_fine_cost': cost_estimate.regulatory_max_penalty,
                 'cost_score': self._calculate_cost_score(cost_estimate.estimated_total_breach_cost),
                 'cost_score_formula': 'log-normalization against MTL',
                 'confidence_level': cost_estimate.confidence_level,
@@ -321,8 +720,7 @@ class ScanOrchestrator:
             }
             analyses.append(analysis)
 
-        if analyses:
-            self.supabase.table('cost_analyses').insert(analyses).execute()
+        return analyses
 
     def create_compliance_violations(self, scan_id: str, clerk_id: str,
                                      selected_compliances: List[str]):
@@ -344,7 +742,7 @@ class ScanOrchestrator:
                         'id': str(uuid.uuid4()),
                         'scan_id': scan_id,
                         'clerk_id': clerk_id,
-                        'compliance_framework': compliance.lower(),
+                        'compliance_framework': self._map_compliance(compliance),
                         'violation_type': 'mfa_missing',
                         'severity': 'high',
                         'resource_id': entity['entity_arn'],
@@ -361,8 +759,8 @@ class ScanOrchestrator:
                         'id': str(uuid.uuid4()),
                         'scan_id': scan_id,
                         'clerk_id': clerk_id,
-                        'compliance_framework': compliance.lower(),
-                        'violation_type': 'overprivileged',
+                        'compliance_framework': self._map_compliance(compliance),
+                        'violation_type': 'overprivileged_access',
                         'severity': 'critical',
                         'resource_id': entity['entity_arn'],
                         'resource_type': entity['entity_type'],
@@ -378,8 +776,8 @@ class ScanOrchestrator:
                         'id': str(uuid.uuid4()),
                         'scan_id': scan_id,
                         'clerk_id': clerk_id,
-                        'compliance_framework': compliance.lower(),
-                        'violation_type': 'dormant_credentials',
+                        'compliance_framework': self._map_compliance(compliance),
+                        'violation_type': 'dormant_account',
                         'severity': 'medium',
                         'resource_id': entity['entity_arn'],
                         'resource_type': 'user',
@@ -421,7 +819,7 @@ class ScanOrchestrator:
             'compliance_violations_found': len(violations)
         }).eq('id', scan_id).execute()
 
-
+    
     def _update_phase(self, scan_id: str, phase: str, progress: int):
         self.supabase.table('iam_scans').update({
             'current_phase': phase,
@@ -456,7 +854,6 @@ class ScanOrchestrator:
             risk_factors = entity.get('static_risk_factors', {})
             base_score = entity.get('static_risk_score', 0)
 
-            # Boost for admin/overprivileged
             if risk_factors.get('is_admin'):
                 base_score = max(base_score, 90)
             elif risk_factors.get('is_overprivileged'):
@@ -464,40 +861,100 @@ class ScanOrchestrator:
 
             scores.append(base_score)
 
-        return max(scores) * 0.7 + (sum(scores) / len(scores)) * 0.3
+        return float(max(scores)) * 0.5 + (float(sum(scores)) / len(scores)) * 0.5
 
-    def _calculate_graph_score(self, path: Dict) -> float:
-        """Score based on path topology."""
+    def _precompute_graph_lof(self, paths: List[Dict]) -> Dict[str, float]:
+        
+        if Node2Vec is None:
+            print("Warning: node2vec not installed. Skipping graph LOF.")
+            return {}
+
+        try:
+            G = nx.Graph()
+            for path in paths:
+                nodes = path.get('path_nodes', [])
+                for i in range(len(nodes) - 1):
+                    G.add_edge(nodes[i], nodes[i+1])
+
+            if G.number_of_nodes() < 5:
+                return {}
+
+            # 1. Node2Vec Embedding
+            node2vec = Node2Vec(G, dimensions=32, walk_length=10, num_walks=10, workers=1, quiet=True)
+            model = node2vec.fit(window=5, min_count=1, batch_words=4)
+            
+            # 2. Extract embeddings
+            nodes_list = list(G.nodes())
+            embeddings = [model.wv[node] for node in nodes_list]
+
+            # 3. Local Outlier Factor
+            lof = LocalOutlierFactor(n_neighbors=min(10, len(nodes_list)-1), contamination='auto')
+            lof.fit_predict(embeddings)
+            
+            nof = lof.negative_outlier_factor_
+            
+            lof_scores = {}
+            for i, node in enumerate(nodes_list):
+                score = nof[i]
+                # Normalize NOF to 0-100: typically -1 is normal, -3 is outlier
+                normalized = min(100.0, max(0.0, (-score - 1.0) * 100.0))
+                lof_scores[node] = normalized
+
+            return lof_scores
+        except Exception as e:
+            print(f"Graph LOF calculation failed: {e}")
+            return {}
+
+    def _calculate_graph_score(self, path: Dict, lof_scores: Dict[str, float]) -> float:
+        """Score based on path topology using Node2Vec/LOF and Shortest Path."""
         length = path.get('path_length', 1)
-        # Shorter paths = more dangerous
-        base_score = max(0, 100 - (length * 8))
-
-        # Bonus for paths ending at admin
+        
+        # Exponential decay: shorter paths = exponentially higher risk
+        base_score = 100.0 * math.exp(-0.15 * length)
+        
         if 'admin' in path.get('target_name', '').lower():
-            base_score += 10
+            base_score = min(100.0, base_score + 10)
 
-        return min(100, base_score)
+        path_nodes = path.get('path_nodes', [])
+        path_lof = 0.0
+        if path_nodes and lof_scores:
+            node_lofs = [lof_scores.get(n, 0.0) for n in path_nodes]
+            path_lof = sum(node_lofs) / len(node_lofs)
+
+        # Non-linear combination: sigmoid function to strictly bound [0, 100]
+        raw_combined = (base_score * 0.4) + (path_lof * 0.6)
+        
+        # Sigmoid formula [0-100] : y = 100 / (1 + e^-k(x-x0))
+        # k = 0.05, x0 = 50 so it gives a smooth S-curve bound perfectly between 0 and 100
+        final_score = 100.0 / (1.0 + math.exp(-0.08 * (raw_combined - 45.0)))
+        
+        return float(min(100.0, max(0.0, final_score)))
 
     def _calculate_temporal_score(self, scan_id: str, source_id: str) -> float:
-        """Calculate temporal score from temporal_events."""
+        
         try:
+            # Get all temporal events for this scan
             result = self.supabase.table('temporal_events').select('*').eq('scan_id', scan_id).execute()
-            events = result.data
+            all_events = result.data
 
-            if not events:
+            if not all_events:
                 return 0.0
 
-            # Count anomalous events
-            anomalous = sum(1 for e in events if e.get('is_anomalous', False))
-            total = len(events)
+            source_name = source_id.split('/')[-1] if '/' in source_id else source_id
+            entity_events = [
+                e for e in all_events
+                if source_name in str(e.get('raw_event', {}))
+                or source_name in str(e.get('event_name', ''))
+            ]
 
-            if total == 0:
-                return 0.0
+            events_to_analyze = entity_events if entity_events else all_events
 
-            anomaly_ratio = anomalous / total
-            return min(100, anomaly_ratio * 100 + 20)
+            risk_score = self.temporal_analyzer.calculate_temporal_risk_score(events_to_analyze)
 
-        except Exception:
+            return risk_score
+
+        except Exception as e:
+            print(f"Warning: Temporal analysis failed: {e}")
             return 0.0
 
     def _detect_services_from_path(self, path_entities: List[Dict]) -> List[str]:
@@ -511,7 +968,6 @@ class ScanOrchestrator:
 
     def _map_to_service_type(self, detected_services: List[str]) -> ServiceType:
         """Map detected services to ServiceType enum with generic fallback."""
-        # Primary service mappings
         service_mapping = {
             'rds': ServiceType.RDS,
             's3': ServiceType.S3,
@@ -526,16 +982,14 @@ class ScanOrchestrator:
             'spanner': ServiceType.SPANNER,
         }
 
-        # Return first matched service
         for svc in detected_services:
             if svc in service_mapping:
                 return service_mapping[svc]
 
-        # FALLBACK: If no specific service detected, use generic compute
         return ServiceType.EC2
 
     def _infer_sensitivity(self, detected_services: List[str]) -> DataSensitivity:
-        """Infer data sensitivity from services. Covers ALL services."""
+        """Infer data sensitivity from services."""
         critical_services = {'kms', 'secretsmanager'}
         restricted_services = {'rds', 'cloudsql', 'spanner', 'redshift', 'dynamodb'}
         confidential_services = {'s3', 'bigquery', 'cloudstorage'}
@@ -574,65 +1028,82 @@ class ScanOrchestrator:
         return round((raw / max_possible) * 100)
 
     def get_graph_for_cytoscape(self, scan_id: str) -> dict:
-        """Transform stored graph data into Cytoscape.js elements format."""
+        """Fetch graph from Neo4j and transform into Cytoscape.js elements format."""
         import json
-        import glob
-        import os
-
-        # Find the graph JSON file
-        graph_files = glob.glob(f"/tmp/*{scan_id}*.json") if '-' not in scan_id[:8] else []
-        # Also check for scan records to find the original scan_id
-        if not graph_files:
-            # Look up the scan record to find the provider-specific scan_id
-            result = self.supabase.table('iam_scans').select('*').eq('id', scan_id).execute()
-            if result.data:
-                for f in os.listdir('/tmp'):
-                    if f.endswith('.json') and (f.startswith('aws-') or f.startswith('gcp-')):
-                        graph_files.append(f'/tmp/{f}')
-
-        if not graph_files:
-            return {"elements": {"nodes": [], "edges": []}}
-
-        # Use the most recent file
-        graph_file = sorted(graph_files)[-1]
-
-        with open(graph_file, 'r') as f:
-            graph_data = json.load(f)
-
+        
         cyto_nodes = []
-        for node in graph_data.get('nodes', []):
-            cyto_nodes.append({
-                "data": {
-                    "id": node.get('id', ''),
-                    "label": node.get('name', node.get('id', '')),
-                    "type": node.get('type', 'Unknown'),
-                    "provider": node.get('provider', ''),
-                    "is_admin": node.get('is_admin', False),
-                    "is_overprivileged": node.get('is_overprivileged', False),
-                    "has_mfa": node.get('has_mfa', False),
-                    "is_dormant": node.get('is_dormant', False),
-                    "is_external": node.get('is_external', False),
-                    "risk_score": node.get('props', {}).get('risk_score', 0),
-                    "account": node.get('account', ''),
-                }
-            })
-
         cyto_edges = []
-        for edge in graph_data.get('edges', []):
-            cyto_edges.append({
-                "data": {
-                    "id": f"{edge.get('source', '')}->{edge.get('target', '')}",
-                    "source": edge.get('source', ''),
-                    "target": edge.get('target', ''),
-                    "label": edge.get('type', ''),
-                    "type": edge.get('type', ''),
-                }
-            })
-
+        stats = {}
+        
+        try:
+            paths_res = self.supabase.table('attack_paths').select('path_nodes, hybrid_risk_score').eq('scan_id', scan_id).execute()
+            paths = paths_res.data or []
+            
+            node_max_risk = {}
+            for p in paths:
+                score = p.get('hybrid_risk_score', 0)
+                for node_id in p.get('path_nodes', []):
+                    if score > node_max_risk.get(node_id, 0):
+                        node_max_risk[node_id] = score
+                        
+            with self.neo4j.session() as session:
+                # 1. Fetch all entities (nodes) for this scan
+                result = session.run("MATCH (n:Entity {scan_id: $scan_id}) RETURN n", scan_id=scan_id)
+                for record in result:
+                    node = record['n']
+                    props_str = node.get('props', '{}')
+                    try:
+                        props_dict = json.loads(props_str) if isinstance(props_str, str) else props_str
+                    except Exception:
+                        props_dict = {}
+                        
+                    cyto_nodes.append({
+                        "data": {
+                            "id": node.get('id', ''),
+                            "label": node.get('name', node.get('id', '')),
+                            "type": node.get('type', 'Unknown'),
+                            "provider": node.get('provider', ''),
+                            "is_admin": node.get('is_admin', False),
+                            "is_overprivileged": node.get('is_overprivileged', False),
+                            "has_mfa": node.get('has_mfa', False),
+                            "is_dormant": node.get('is_dormant', False),
+                            "is_external": node.get('is_external', False),
+                            "risk_score": max(
+                                props_dict.get('risk_score', 0) if isinstance(props_dict, dict) else 0,
+                                node_max_risk.get(node.get('id', ''), 0)
+                            ),
+                            "account": node.get('account', ''),
+                        }
+                    })
+                    
+                # 2. Fetch all relationships (edges) for this scan
+                result = session.run(
+                    "MATCH (n:Entity {scan_id: $scan_id})-[r]->(m:Entity {scan_id: $scan_id}) "
+                    "RETURN n.id AS source, m.id AS target, type(r) AS rel_type, r", 
+                    scan_id=scan_id
+                )
+                for record in result:
+                    source = record['source']
+                    target = record['target']
+                    rel_type = record['rel_type']
+                    cyto_edges.append({
+                        "data": {
+                            "id": f"{source}->{target}",
+                            "source": source,
+                            "target": target,
+                            "label": rel_type,
+                            "type": rel_type,
+                        }
+                    })
+                    
+        except Exception as e:
+            import logging
+            logging.error(f"Failed to fetch graph from Neo4j for scan {scan_id}: {e}")
+            
         return {
             "elements": {
                 "nodes": cyto_nodes,
                 "edges": cyto_edges
             },
-            "stats": graph_data.get('stats', {})
+            "stats": stats
         }

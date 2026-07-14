@@ -48,7 +48,6 @@ interface FindingsData {
 const STATIC_FINDINGS = [
   {
     severity: "Critical",
-    icon: "🔴",
     label: "Privilege Escalation Path",
     title: "Admin Access Chain Detected",
     summary:
@@ -56,7 +55,6 @@ const STATIC_FINDINGS = [
   },
   {
     severity: "High",
-    icon: "🟠",
     label: "Cross-Account Exposure",
     title: "Role Trust Policy Exploitable",
     summary:
@@ -64,7 +62,6 @@ const STATIC_FINDINGS = [
   },
   {
     severity: "Medium",
-    icon: "🟡",
     label: "Cost-Risk Overlap",
     title: "Zombie Admin Resources Active",
     summary:
@@ -72,7 +69,6 @@ const STATIC_FINDINGS = [
   },
   {
     severity: "Low",
-    icon: "🔵",
     label: "Compliance Gap",
     title: "SOC 2 / RBI Control Mismatch",
     summary:
@@ -96,6 +92,7 @@ function getSeverityColor(severity: string) {
 }
 
 function formatCurrency(n: number): string {
+  if (n >= 1_000_000_000) return `$${(n / 1_000_000).toFixed(1)}B`;
   if (n >= 1_000_000) return `$${(n / 1_000_000).toFixed(1)}M`;
   if (n >= 1_000) return `$${(n / 1_000).toFixed(0)}K`;
   return `$${n.toFixed(0)}`;
@@ -159,7 +156,7 @@ export default function FindingsPage() {
       const blob = await res.blob();
       const link = document.createElement("a");
       link.href = URL.createObjectURL(blob);
-      link.download = `authmap_findings_${latestScan.id}.txt`;
+      link.download = `authmap_findings_${latestScan.id}.pdf`;
       link.click();
       URL.revokeObjectURL(link.href);
     } catch {
@@ -220,19 +217,19 @@ export default function FindingsPage() {
 
             {/* Risk summary */}
             <div className="grid gap-3 sm:grid-cols-3">
-              <div className="rounded-[1.4rem] border border-red-500/20 bg-red-500/[0.04] p-5">
+              <div className="rounded-[1.4rem]  bg-white-500/[0.04] p-5">
                 <p className="font-[family:var(--font-plex-mono)] text-[0.6rem] font-medium uppercase tracking-[0.22em] text-slate-400">
                   Admin Entities
                 </p>
                 <p className="mt-2 text-2xl font-semibold text-red-400">{findings.risk.admin_count}</p>
               </div>
-              <div className="rounded-[1.4rem] border border-orange-500/20 bg-orange-500/[0.04] p-5">
+              <div className="rounded-[1.4rem]  bg-white-500/[0.04] p-5">
                 <p className="font-[family:var(--font-plex-mono)] text-[0.6rem] font-medium uppercase tracking-[0.22em] text-slate-400">
                   Overprivileged
                 </p>
                 <p className="mt-2 text-2xl font-semibold text-orange-400">{findings.risk.overprivileged_count}</p>
               </div>
-              <div className="rounded-[1.4rem] border border-yellow-500/20 bg-yellow-500/[0.04] p-5">
+              <div className="rounded-[1.4rem] bg-white-500/[0.04] p-5">
                 <p className="font-[family:var(--font-plex-mono)] text-[0.6rem] font-medium uppercase tracking-[0.22em] text-slate-400">
                   Dormant Credentials
                 </p>
@@ -266,19 +263,19 @@ export default function FindingsPage() {
                   Compliance Violations
                 </p>
                 <div className="mt-3 grid grid-cols-2 gap-2">
-                  <div className="rounded-lg border border-red-500/20 bg-red-500/[0.06] p-2 text-center">
+                  <div className="rounded-lg  bg-white-500/[0.06] p-2 text-center">
                     <p className="text-lg font-semibold text-red-400">{findings.compliance_violations.critical}</p>
                     <p className="text-[0.6rem] uppercase tracking-wider text-red-400/70">Critical</p>
                   </div>
-                  <div className="rounded-lg border border-orange-500/20 bg-orange-500/[0.06] p-2 text-center">
+                  <div className="rounded-lg  bg-white-500/[0.06] p-2 text-center">
                     <p className="text-lg font-semibold text-orange-400">{findings.compliance_violations.high}</p>
                     <p className="text-[0.6rem] uppercase tracking-wider text-orange-400/70">High</p>
                   </div>
-                  <div className="rounded-lg border border-yellow-500/20 bg-yellow-500/[0.06] p-2 text-center">
+                  <div className="rounded-lg  bg-white-500/[0.06] p-2 text-center">
                     <p className="text-lg font-semibold text-yellow-400">{findings.compliance_violations.medium}</p>
                     <p className="text-[0.6rem] uppercase tracking-wider text-yellow-400/70">Medium</p>
                   </div>
-                  <div className="rounded-lg border border-blue-500/20 bg-blue-500/[0.06] p-2 text-center">
+                  <div className="rounded-lg  bg-white-500/[0.06] p-2 text-center">
                     <p className="text-lg font-semibold text-blue-400">{findings.compliance_violations.low}</p>
                     <p className="text-[0.6rem] uppercase tracking-wider text-blue-400/70">Low</p>
                   </div>
@@ -323,14 +320,7 @@ export default function FindingsPage() {
                 key={item.severity}
                 className="rounded-[1.75rem] border border-white/10 bg-white/[0.03] p-6 shadow-[0_18px_50px_rgba(0,0,0,0.24)]"
               >
-                <div className="flex items-start justify-between gap-3">
-                  <span
-                    className={`rounded-full border px-3 py-1 text-xs font-semibold uppercase tracking-[0.22em] ${getSeverityColor(item.severity)}`}
-                  >
-                    {item.severity}
-                  </span>
-                  <span className="text-xl">{item.icon}</span>
-                </div>
+                
                 <p className="mt-4 font-[family:var(--font-plex-mono)] text-[0.65rem] font-medium uppercase tracking-[0.22em] text-slate-400">
                   {item.label}
                 </p>
@@ -365,10 +355,10 @@ export default function FindingsPage() {
                 disabled={downloading}
                 className="action-box action-box-cyan px-5 py-3 text-sm font-semibold text-white disabled:opacity-50"
               >
-                {downloading ? "Downloading…" : "Download findings.txt"}
+                {downloading ? "Downloading…" : "Download findings.pdf"}
               </button>
               <span className="text-xs text-slate-500">
-                Scan ID #{latestScan.id} &middot; findings.txt
+                Scan ID #{latestScan.id} &middot; findings.pdf
               </span>
             </div>
           ) : (

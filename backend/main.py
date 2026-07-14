@@ -1,8 +1,3 @@
-"""
-AuthMap Backend — FastAPI application.
-Exposes scan orchestration, graph analysis, and compliance endpoints.
-"""
-
 import os
 import sys
 import io
@@ -20,18 +15,15 @@ from dotenv import load_dotenv
 import httpx
 import jwt
 
-# Add collectors to path
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), 'collectors'))
 
 from collectors.scan_orchestrator import ScanOrchestrator
 from collectors.breach_cost_estimator import Region
 
+
 load_dotenv()
 logger = logging.getLogger(__name__)
 
-# ---------------------------------------------------------------------------
-# Clerk JWT Auth
-# ---------------------------------------------------------------------------
 
 _cached_jwks: Optional[dict] = None
 
@@ -66,14 +58,12 @@ async def get_clerk_user_id(request: Request) -> str:
 
     try:
         jwks = await _get_clerk_jwks()
-        # Build signing keys from JWKS
         public_keys: dict[str, jwt.algorithms.RSAAlgorithm] = {}
         for jwk_key in jwks.get("keys", []):
             kid = jwk_key.get("kid")
             if kid:
                 public_keys[kid] = jwt.algorithms.RSAAlgorithm.from_jwk(jwk_key)
 
-        # Decode header to find the kid
         unverified_header = jwt.get_unverified_header(token)
         kid = unverified_header.get("kid")
         if kid not in public_keys:
@@ -102,35 +92,24 @@ async def get_clerk_user_id(request: Request) -> str:
         raise HTTPException(status_code=401, detail=f"Authentication failed: {e}")
 
 
-# ---------------------------------------------------------------------------
-# Pydantic models
-# ---------------------------------------------------------------------------
 
 class ScanRequest(BaseModel):
-    provider: str  # 'aws' or 'gcp'
-    # AWS fields
+    provider: str  
     aws_access_key_id: Optional[str] = None
     aws_secret_key: Optional[str] = None
     region: Optional[str] = 'us-east-1'
-    # GCP fields
     gcp_project_id: Optional[str] = None
     gcp_service_account_key: Optional[str] = None
-    # Scan options
-    scan_depth: Optional[str] = 'standard'
+    scan_type: Optional[str] = 'full'
     selected_compliances: Optional[List[str]] = ['SOC2', 'DPDP']
-    # Risk scoring inputs
-    cost_region: Optional[str] = 'INDIA'  # For breach cost estimation
+    cost_region: Optional[str] = 'INDIA'  
     annual_revenue: Optional[float] = None
-    # Neo4j Aura (optional — overrides env defaults)
     neo4j_uri: Optional[str] = None
     neo4j_username: Optional[str] = None
     neo4j_password: Optional[str] = None
     neo4j_project_id: Optional[str] = None
 
 
-# ---------------------------------------------------------------------------
-# FastAPI app
-# ---------------------------------------------------------------------------
 
 app = FastAPI(
     title="AuthMap API",
@@ -146,26 +125,19 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# ---------------------------------------------------------------------------
-# Helpers
-# ---------------------------------------------------------------------------
 
 scan_status: dict[str, dict] = {}
 
 
 def get_orchestrator(neo4j_uri=None, neo4j_user=None, neo4j_password=None) -> ScanOrchestrator:
     """Instantiate a ScanOrchestrator with env-var defaults (overridable)."""
-    supabase_url = os.getenv("SUPABASE_URL")
-    supabase_key = os.getenv("SUPABASE_KEY")
+    postgres_uri = os.getenv("POSTGRES_URI")
     n_uri = neo4j_uri or os.getenv("NEO4J_URI", "bolt://localhost:7687")
     n_user = neo4j_user or os.getenv("NEO4J_USER", "neo4j")
     n_pass = neo4j_password or os.getenv("NEO4J_PASSWORD", "password")
-    return ScanOrchestrator(supabase_url, supabase_key, n_uri, n_user, n_pass)
+    return ScanOrchestrator(postgres_uri, n_uri, n_user, n_pass)
 
 
-# ---------------------------------------------------------------------------
-# Background scan pipeline
-# ---------------------------------------------------------------------------
 
 async def run_scan_pipeline(scan_id: str, clerk_id: str, req: ScanRequest):
     """Execute the full scan pipeline in the background."""
@@ -200,6 +172,7 @@ async def run_scan_pipeline(scan_id: str, clerk_id: str, req: ScanRequest):
         # Phase 2 — Graph analysis
         scan_status[scan_id].update(phase="graph_building", progress=40)
         paths = orchestrator.run_graph_analysis(scan_id)
+        
 
         # Phase 3 — Attack paths & cost
         scan_status[scan_id].update(phase="risk_scoring", progress=60)
@@ -233,9 +206,6 @@ async def run_scan_pipeline(scan_id: str, clerk_id: str, req: ScanRequest):
         }
 
 
-# ---------------------------------------------------------------------------
-# Routes
-# ---------------------------------------------------------------------------
 
 @app.post("/scan/run")
 async def start_scan(
@@ -249,12 +219,28 @@ async def start_scan(
         neo4j_user=req.neo4j_username,
         neo4j_password=req.neo4j_password,
     )
+    
+    try:
+        orchestrator.verify_neo4j_connection()
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+    orchestrator.ensure_user_exists(clerk_id)
+    cred_id = orchestrator.ensure_csp_credential(
+        clerk_id=clerk_id,
+        csp_target=req.provider,
+        aws_access=req.aws_access_key_id,
+        aws_secret=req.aws_secret_key,
+        aws_region=req.region,
+        gcp_project=req.gcp_project_id,
+        gcp_json=req.gcp_service_account_key
+    )
 
     scan_id = orchestrator.create_scan_record(
         clerk_id=clerk_id,
-        credential_id=req.neo4j_project_id or "default",
+        credential_id=cred_id,
         scan_name=f"{req.provider.upper()} Scan",
-        scan_type=req.scan_depth,
+        scan_type=req.scan_type,
         csp_target=req.provider,
         selected_compliances=req.selected_compliances,
     )
@@ -272,7 +258,6 @@ async def get_scan_status(
     if scan_id in scan_status:
         return scan_status[scan_id]
 
-    # Fallback to Supabase
     try:
         orchestrator = get_orchestrator()
         result = orchestrator.supabase.table("iam_scans").select("*").eq("id", scan_id).execute()
@@ -351,12 +336,55 @@ async def get_cost_analysis(
     orchestrator = get_orchestrator()
     cost_result = orchestrator.supabase.table("cost_analyses").select("*").eq("scan_id", scan_id).execute()
     paths_result = orchestrator.supabase.table("attack_paths").select(
-        "id,path_name,estimated_cost_impact,cost_breakdown,cost_score"
+        "id,path_name,estimated_cost_impact,cost_breakdown,hybrid_risk_score,risk_severity,triggered_compliances"
     ).eq("scan_id", scan_id).execute()
 
+    cost_analyses = cost_result.data or []
+    paths = paths_result.data or []
+
+    total_breach = sum(p.get("estimated_cost_impact", 0) for p in paths)
+    max_penalty = sum(ca.get("regulatory_fine_cost", 0) for ca in cost_analyses)
+    record_costs = [p.get("cost_breakdown", {}).get("final_per_record_cost_usd") for p in paths if p.get("cost_breakdown") and p["cost_breakdown"].get("final_per_record_cost_usd")]
+    avg_per_record = sum(record_costs) / len(record_costs) if record_costs else 165.0
+    max_risk_score = max([p.get("hybrid_risk_score", 0) for p in paths] + [0])
+
+    frontend_paths = []
+    for p in paths:
+        frontend_paths.append({
+            "path_id": p.get("id"),
+            "path": p.get("path_name", ""),
+            "risk_score": p.get("hybrid_risk_score", 0),
+            "estimated_cost": p.get("estimated_cost_impact", 0),
+            "compliance": p.get("triggered_compliances", []),
+            "severity": p.get("risk_severity", "low")
+        })
+        
+    penalties_map = {}
+    for ca in cost_analyses:
+        fw = ca.get("compliance_framework")
+        if not fw:
+            continue
+        # Use regulatory fine if available, fallback to total estimated
+        cost = float(ca.get("regulatory_fine_cost") or ca.get("total_estimated_cost", 0))
+        if fw not in penalties_map:
+            penalties_map[fw] = 0.0
+        penalties_map[fw] += cost
+
+    penalties = []
+    for fw, total_cost in penalties_map.items():
+        penalties.append({
+            "framework": fw,
+            "penalty_low": total_cost * 0.5,
+            "penalty_high": total_cost
+        })
+
     return {
-        "cost_analyses": cost_result.data,
-        "path_costs": paths_result.data,
+        "total_estimated_breach_cost": total_breach,
+        "max_regulatory_penalty": max_penalty,
+        "avg_per_record_cost": avg_per_record,
+        "max_risk_score": max_risk_score,
+        "paths": frontend_paths,
+        "compliance_penalties": penalties,
     }
 
 
@@ -410,7 +438,14 @@ async def get_findings_summary(
         by_severity[sev] = by_severity.get(sev, 0) + 1
 
     return {
-        "entities": {"total": len(entities), "by_type": by_type},
+        "entities": {
+            "total": len(entities),
+            "users": by_type.get("user", 0),
+            "roles": by_type.get("role", 0),
+            "groups": by_type.get("group", 0),
+            "policies": by_type.get("managed_policy", 0),
+            "service_accounts": by_type.get("service_account", 0),
+        },
         "risk": {
             "admin_count": admin_count,
             "overprivileged_count": overprivileged_count,
@@ -418,11 +453,16 @@ async def get_findings_summary(
         },
         "attack_paths": {
             "total": len(paths),
-            "max_score": max(path_scores, default=0),
-            "avg_score": round(sum(path_scores) / len(path_scores), 2) if path_scores else 0,
+            "max_risk_score": max(path_scores, default=0),
+            "avg_risk_score": round(sum(path_scores) / len(path_scores), 2) if path_scores else 0,
         },
-        "violations": {"total": len(violations), "by_severity": by_severity},
-        "cost": {"total_estimated": total_cost},
+        "compliance_violations": {
+            "critical": by_severity.get("critical", 0),
+            "high": by_severity.get("high", 0),
+            "medium": by_severity.get("medium", 0),
+            "low": by_severity.get("low", 0),
+        },
+        "total_estimated_breach_cost": total_cost,
     }
 
 
@@ -432,48 +472,99 @@ async def download_scan_data(
     file_type: str,
     clerk_id: str = Depends(get_clerk_user_id),
 ):
-    """Download scan data as JSON or CSV."""
     import glob as _glob
 
-    if file_type not in ("json", "csv"):
-        raise HTTPException(status_code=400, detail="file_type must be 'json' or 'csv'")
+    if file_type not in ("json", "csv", "findings"):
+        raise HTTPException(status_code=400, detail="file_type must be 'json', 'csv', or 'findings'")
 
-    # Locate the graph JSON file
-    graph_files = _glob.glob(f"/tmp/*{scan_id}*.json")
-    if not graph_files:
-        # Fallback: look for any provider-prefixed files
-        graph_files = [
-            f"/tmp/{f}"
-            for f in os.listdir("/tmp")
-            if f.endswith(".json") and (f.startswith("aws-") or f.startswith("gcp-"))
-        ]
-
-    if not graph_files:
-        raise HTTPException(status_code=404, detail="Graph data file not found")
-
-    graph_file = sorted(graph_files)[-1]
-
-    if file_type == "json":
+    if file_type == "findings":
+        from fpdf import FPDF
+        import tempfile
+        
+        orchestrator = get_orchestrator()
+        paths_res = orchestrator.supabase.table("attack_paths").select("*").eq("scan_id", scan_id).execute()
+        paths = paths_res.data or []
+        
+        pdf = FPDF()
+        pdf.add_page()
+        pdf.add_font("DejaVu", "", "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf")
+        pdf.add_font("DejaVu", "B", "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf")
+        
+        pdf.set_font("DejaVu", "B", 16)
+        pdf.cell(0, 10, f"IAM Security Findings - Scan {scan_id}", new_x="LMARGIN", new_y="NEXT", align="C")
+        pdf.ln(10)
+        
+        if not paths:
+            pdf.set_font("DejaVu", "", 12)
+            pdf.cell(0, 10, "No attack paths found in this scan. Note: You may need to run a new scan.", new_x="LMARGIN", new_y="NEXT")
+        else:
+            pdf.set_font("DejaVu", "B", 14)
+            pdf.cell(0, 10, f"Total Attack Paths: {len(paths)}", new_x="LMARGIN", new_y="NEXT")
+            pdf.ln(5)
+            import textwrap
+            
+            for i, p in enumerate(paths, 1):
+                pdf.set_font("DejaVu", "B", 12)
+                safe_name = textwrap.fill(str(p.get('path_name', 'Unknown Path')), width=60, break_long_words=True)
+                pdf.set_x(10)
+                pdf.multi_cell(190, 7, f"{i}. {safe_name}")
+                
+                pdf.set_font("DejaVu", "", 10)
+                safe_desc = textwrap.fill(str(p.get('path_description', '')), width=60, break_long_words=True)
+                pdf.set_x(10)
+                pdf.multi_cell(190, 7, f"Description: {safe_desc}")
+                
+                safe_sev = textwrap.fill(f"Risk Severity: {p.get('risk_severity', 'Unknown').upper()} | Score: {p.get('hybrid_risk_score', 0):.2f}", width=60, break_long_words=True)
+                pdf.set_x(10)
+                pdf.multi_cell(190, 7, safe_sev)
+                
+                safe_cost = textwrap.fill(f"Est. Breach Cost: ${p.get('estimated_cost_impact', 0):,.2f}", width=60, break_long_words=True)
+                pdf.set_x(10)
+                pdf.multi_cell(190, 7, safe_cost)
+                
+                if p.get('cost_breakdown') and 'regulatory_fines' in p['cost_breakdown']:
+                    fines = p['cost_breakdown']['regulatory_fines']
+                    if fines:
+                        fines_str = f"Regulatory Fines: {', '.join([f'{k}: ${v:,.2f}' for k, v in fines.items()])}"
+                        safe_fines = textwrap.fill(fines_str, width=60, break_long_words=True)
+                        pdf.set_x(10)
+                        pdf.multi_cell(190, 7, safe_fines)
+                
+                pdf.ln(5)
+                
+        tmp_pdf = tempfile.NamedTemporaryFile(delete=False, suffix=".pdf")
+        pdf.output(tmp_pdf.name)
+        
         return FileResponse(
-            graph_file,
-            media_type="application/json",
-            filename=f"authmap_scan_{scan_id}.json",
+            tmp_pdf.name,
+            media_type="application/pdf",
+            filename=f"authmap_findings_{scan_id}.pdf"
         )
 
-    # CSV generation
-    with open(graph_file, "r") as f:
-        graph_data = json.load(f)
+    graph_data = orchestrator.get_graph_for_cytoscape(scan_id)
+    elements = graph_data.get("elements", {})
+    nodes = [n.get("data", {}) for n in elements.get("nodes", [])]
+    edges = [e.get("data", {}) for e in elements.get("edges", [])]
+    
+    if not nodes and not edges:
+        raise HTTPException(status_code=404, detail="Graph data not found in Neo4j")
+
+    if file_type == "json":
+        return StreamingResponse(
+            io.StringIO(json.dumps({"nodes": nodes, "edges": edges})),
+            media_type="application/json",
+            headers={"Content-Disposition": f"attachment; filename=authmap_scan_{scan_id}.json"},
+        )
 
     output = io.StringIO()
     writer = csv.writer(output)
 
-    # Nodes sheet
     writer.writerow(["type", "id", "name", "provider", "account", "is_admin", "is_overprivileged", "has_mfa", "is_dormant", "is_external", "risk_score"])
-    for node in graph_data.get("nodes", []):
+    for node in nodes:
         writer.writerow([
             node.get("type", ""),
             node.get("id", ""),
-            node.get("name", ""),
+            node.get("label", ""),
             node.get("provider", ""),
             node.get("account", ""),
             node.get("is_admin", False),
@@ -481,13 +572,12 @@ async def download_scan_data(
             node.get("has_mfa", False),
             node.get("is_dormant", False),
             node.get("is_external", False),
-            node.get("props", {}).get("risk_score", 0),
+            node.get("risk_score", 0),
         ])
 
-    # Blank separator row then edges
     writer.writerow([])
     writer.writerow(["edge_source", "edge_target", "edge_type"])
-    for edge in graph_data.get("edges", []):
+    for edge in edges:
         writer.writerow([
             edge.get("source", ""),
             edge.get("target", ""),

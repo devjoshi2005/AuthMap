@@ -37,14 +37,23 @@ class EntityType(Enum):
             'POLICY': 'managed_policy',
             'SERVICE_ACCOUNT': 'service_account',
             'PERMISSION_SET': 'permission_set',
+            'RESOURCE': 'resource',
+            'PROJECT': 'project',
+            'ACCOUNT': 'account'
         }
         return mapping.get(self.name, self.value.lower())
 
     @classmethod
     def is_schema_entity(cls, type_name: str) -> bool:
         """Check if this entity type should be stored in scan_entities table."""
-        schema_types = {'USER', 'ROLE', 'GROUP', 'POLICY', 'SERVICE_ACCOUNT', 'PERMISSION_SET'}
-        return type_name in schema_types
+        upper_type = type_name.upper()
+        if upper_type == 'SERVICEACCOUNT':
+            upper_type = 'SERVICE_ACCOUNT'
+        elif upper_type == 'PERMISSIONSET':
+            upper_type = 'PERMISSION_SET'
+            
+        schema_types = {'USER', 'ROLE', 'GROUP', 'POLICY', 'SERVICE_ACCOUNT', 'PERMISSION_SET', 'RESOURCE', 'PROJECT', 'ACCOUNT'}
+        return upper_type in schema_types
 
 
 class RelationType(Enum):
@@ -239,10 +248,6 @@ class PermissionClassifier:
 
     @classmethod
     def calculate_static_risk(cls, permissions: List[str]) -> Tuple[bool, bool, float, List[str]]:
-        """
-        Calculate static risk for a set of permissions.
-        Returns: (is_admin, is_overprivileged, risk_score, detected_services)
-        """
         if not permissions:
             return False, False, 0, []
 
@@ -258,9 +263,9 @@ class PermissionClassifier:
             if risk_level in ('high', 'admin'):
                 is_overprivileged = True
 
-        # Risk score: weighted average with max penalty
+        # Risk score: 60/40 weighted blend to prevent massive skew from a single permission (Industry standard approach)
         avg_risk = sum(cls.classify_permission(a)[1] for a in permissions) / len(permissions)
-        risk_score = max(max_risk, avg_risk * 0.7 + max_risk * 0.3)
+        risk_score = (max_risk * 0.6) + (avg_risk * 0.4)
 
         services = cls.detect_services(permissions)
 
@@ -269,19 +274,6 @@ class PermissionClassifier:
 
 
 class AWSIAMScanner:
-    """
-    AWS IAM Scanner using ALL relevant APIs (CORRECTED v2.1):
-      - get_account_authorization_details (PAGINATED)
-      - get_access_key_last_used (temporal)
-      - list_mfa_devices (security)
-      - generate_credential_report (comprehensive)
-      - get_policy_version (ACTUAL permission parsing — CRITICAL FIX)
-      - organizations APIs (org structure)
-      - sso-admin APIs (SSO permission sets)
-      - Resource policies (S3, KMS, etc.)
-      - cloudtrail:LookupEvents (temporal events — NEW)
-    """
-
     def __init__(self, access_key_id: str, secret_access_key: str, region: str = "us-east-1"):
         self.session = boto3.Session(
             aws_access_key_id=access_key_id,
@@ -312,37 +304,30 @@ class AWSIAMScanner:
         # Cache for policy documents (ARN -> permissions)
         self._policy_cache: Dict[str, List[str]] = {}
 
-    def scan(self, selected_compliances: List[str] = None) -> IAMGraph:
+    def scan(self, selected_compliances: List[str] = None, scan_id: str = None) -> IAMGraph:
         """Execute complete AWS scan with all APIs (CORRECTED)."""
         if selected_compliances is None:
             selected_compliances = ['SOC2']
 
-        scan_id = f"aws-{self.account_id}-{datetime.now(timezone.utc).strftime('%Y%m%d%H%M%S')}"
+        if scan_id is None:
+            scan_id = f"aws-{self.account_id}-{datetime.now(timezone.utc).strftime('%Y%m%d%H%M%S')}"
         logger.info(f"AWS Scan {scan_id} starting for account {self.account_id}")
 
         try:
-            # === PRIMARY API: get_account_authorization_details (PAGINATED) ===
             auth_details = self._get_auth_details_paginated()
 
-            # === TEMPORAL: Generate credential report ===
             credential_report = self._get_credential_report()
 
-            # === MFA: List MFA devices for all users ===
             mfa_data = self._get_all_mfa_devices()
 
-            # === ACCESS KEYS: Get last used for all keys ===
             key_last_used = self._get_all_access_key_last_used()
 
-            # === ORGANIZATIONS: Get org structure ===
             org_data = self._get_org_data() if self.org_enabled else {}
 
-            # === SSO: Get permission sets ===
             sso_data = self._get_sso_data() if self.sso_enabled else {}
 
-            # === RESOURCE POLICIES: S3, KMS, etc. ===
             resource_policies = self._get_resource_policies()
 
-            # === CLOUDTRAIL: Recent events (last 7 days) ===
             cloudtrail_events = self._get_cloudtrail_events()
 
             # Normalize everything
@@ -397,7 +382,41 @@ class AWSIAMScanner:
             self.nodes.append(asdict(node))
             self.node_ids.add(node.id)
 
+    def _ensure_node_exists(self, node_id: str):
+        if node_id not in self.node_ids:
+            if node_id.startswith('perm:'):
+                n_type = EntityType.PERMISSION_SET.value
+                n_name = node_id.split(':', 1)[-1]
+            elif node_id.startswith('org:'):
+                n_type = EntityType.ORGANIZATION.value
+                n_name = node_id
+            elif node_id.startswith('arn:aws:iam::*:*'):
+                n_type = EntityType.ACCOUNT.value
+                n_name = "Any Account (*)"
+            elif '.amazonaws.com' in node_id:
+                n_type = EntityType.SERVICE_ACCOUNT.value
+                n_name = node_id
+            elif node_id.startswith('arn:'):
+                parts = node_id.split(':')
+                res = parts[-1]
+                n_type = EntityType.ROLE.value if 'role/' in res else EntityType.USER.value
+                n_name = res.split('/')[-1] if '/' in res else res
+            else:
+                n_type = EntityType.RESOURCE.value
+                n_name = node_id
+
+            self._add_node(IAMNode(
+                id=node_id,
+                name=n_name,
+                type=n_type,
+                provider="aws",
+                account=self.account_id,
+                props={'description': 'Implicitly discovered entity'}
+            ))
+
     def _add_edge(self, edge: IAMEdge):
+        self._ensure_node_exists(edge.source)
+        self._ensure_node_exists(edge.target)
         self.edges.append(asdict(edge))
 
     def _get_auth_details_paginated(self) -> Dict:
@@ -432,8 +451,16 @@ class AWSIAMScanner:
                    f"{len(all_details['Policies'])} policies")
         return all_details
 
-    def _get_policy_permissions(self, policy_arn: str, default_version_id: str) -> List[str]:
+    def _get_policy_permissions(self, policy_arn: str, default_version_id: str = None) -> List[str]:
         """Fetch and parse ACTUAL policy document to extract permissions."""
+        if not default_version_id:
+            try:
+                policy_info = self.iam.get_policy(PolicyArn=policy_arn)
+                default_version_id = policy_info['Policy']['DefaultVersionId']
+            except Exception as e:
+                logger.warning(f"Could not fetch metadata for {policy_arn}: {e}")
+                default_version_id = 'v1'
+
         cache_key = f"{policy_arn}:{default_version_id}"
         if cache_key in self._policy_cache:
             return self._policy_cache[cache_key]
@@ -451,33 +478,58 @@ class AWSIAMScanner:
             logger.warning(f"Could not fetch policy {policy_arn}: {e}")
             return []
 
-    def _extract_perms_from_doc(self, doc: Dict) -> List[str]:
-        """Extract permission actions from policy document."""
+    def _extract_perms_from_doc(self, doc) -> List[str]:
+        """Extract permission actions from policy document, handling URL-encoded strings."""
+        import json
+        import urllib.parse
+        
+        if isinstance(doc, str):
+            try:
+                decoded = urllib.parse.unquote(doc)
+                doc = json.loads(decoded)
+            except Exception as e:
+                logger.warning(f"Failed to decode policy doc: {e}")
+                return []
+                
+        if not isinstance(doc, dict):
+            return []
+
         perms = []
-        for stmt in doc.get('Statement', []):
-            if stmt.get('Effect') == 'Allow':
+        stmts = doc.get('Statement', [])
+        if isinstance(stmts, dict):
+            stmts = [stmts]
+            
+        for stmt in stmts:
+            if isinstance(stmt, dict) and stmt.get('Effect') == 'Allow':
                 actions = stmt.get('Action', [])
                 if isinstance(actions, str):
                     actions = [actions]
                 perms.extend(actions)
         return perms
 
-    # === TEMPORAL APIs ===
 
     def _get_credential_report(self) -> Dict[str, Dict]:
         """Generate and parse credential report for all users (with timeout)."""
         report_data = {}
         try:
-            self.iam.generate_credential_report()
             import time
-            for attempt in range(20):  # 20 attempts, 2s each = 40s max
-                time.sleep(2)
-                response = self.iam.get_credential_report()
-                if response['State'] == 'COMPLETE':
+            from botocore.exceptions import ClientError
+            
+            for attempt in range(20):
+                gen_resp = self.iam.generate_credential_report()
+                if gen_resp.get('State') == 'COMPLETE':
                     break
+                time.sleep(2)
+                
                 if attempt == 19:
                     logger.warning("Credential report generation timed out")
                     return {}
+            
+            try:
+                response = self.iam.get_credential_report()
+            except ClientError as e:
+                logger.warning(f"Failed to get credential report after completion: {e}")
+                return {}
 
             csv_content = response['Content'].decode('utf-8')
             reader = csv.DictReader(io.StringIO(csv_content))
@@ -547,7 +599,8 @@ class AWSIAMScanner:
             for page in paginator.paginate(
                 StartTime=start_time,
                 EndTime=end_time,
-                LookupAttributes=[{'AttributeKey': 'EventName', 'AttributeValue': 'ConsoleLogin'}]
+                LookupAttributes=[{'AttributeKey': 'EventName', 'AttributeValue': 'ConsoleLogin'}],
+                PaginationConfig={'MaxItems': 100}
             ):
                 for event in page.get('Events', []):
                     events.append({
@@ -562,7 +615,6 @@ class AWSIAMScanner:
             logger.warning(f"Could not get CloudTrail events: {e}")
         return events
 
-    # === ORGANIZATION APIs ===
 
     def _get_org_data(self) -> Dict:
         """Get organization structure and policies."""
@@ -584,7 +636,6 @@ class AWSIAMScanner:
             logger.warning(f"Could not get org data: {e}")
         return org_data
 
-    # === SSO APIs ===
 
     def _get_sso_data(self) -> Dict:
         """Get SSO permission sets and assignments."""
@@ -624,14 +675,13 @@ class AWSIAMScanner:
             logger.warning(f"Could not get SSO data: {e}")
         return sso_data
 
-    # === RESOURCE POLICIES ===
 
     def _get_resource_policies(self) -> Dict[str, List[Dict]]:
         """Get resource-based policies for S3, KMS, etc."""
         policies = {'s3': [], 'kms': [], 'sns': [], 'sqs': []}
         try:
             s3 = self.session.client('s3')
-            buckets = s3.list_buckets()['Buckets']
+            buckets = s3.list_buckets().get('Buckets', [])[:50]  
             for bucket in buckets:
                 try:
                     policy = s3.get_bucket_policy(Bucket=bucket['Name'])
@@ -644,7 +694,7 @@ class AWSIAMScanner:
 
             kms = self.session.client('kms')
             paginator = kms.get_paginator('list_keys')
-            for page in paginator.paginate():
+            for page in paginator.paginate(PaginationConfig={'MaxItems': 100}):
                 for key in page['Keys']:
                     try:
                         policy = kms.get_key_policy(KeyId=key['KeyId'], PolicyName='default')
@@ -658,7 +708,6 @@ class AWSIAMScanner:
             logger.warning(f"Could not get resource policies: {e}")
         return policies
 
-    # === NORMALIZATION (CORRECTED with actual permission parsing) ===
 
     def _normalize_users(self, users: List[Dict], cred_report: Dict, mfa_data: Dict, key_data: Dict):
         """Normalize user data with ACTUAL permission analysis."""
@@ -666,10 +715,8 @@ class AWSIAMScanner:
             username = user['UserName']
             user_arn = user['Arn']
 
-            # Get credential report data
             cred_info = cred_report.get(username, {})
 
-            # Check dormancy
             last_used = cred_info.get('password_last_used', 'N/A')
             is_dormant = False
             if last_used not in ('N/A', 'no_information', ''):
@@ -679,11 +726,9 @@ class AWSIAMScanner:
                 except Exception:
                     pass
 
-            # MFA status
             mfa_devices = mfa_data.get(username, [])
             has_mfa = len(mfa_devices) > 0
 
-            # Access keys
             access_keys = user.get('AccessKeys', [])
             keys_with_usage = []
             for key in access_keys:
@@ -697,21 +742,32 @@ class AWSIAMScanner:
                     'region': usage.get('region', '')
                 })
 
-            # === CRITICAL FIX: Extract ACTUAL permissions from attached policies ===
             attached_policies = user.get('AttachedManagedPolicies', [])
             all_permissions = []
             for policy in attached_policies:
                 policy_arn = policy['PolicyArn']
-                default_version = policy.get('DefaultVersionId', 'v1')
+                default_version = policy.get('DefaultVersionId')
                 perms = self._get_policy_permissions(policy_arn, default_version)
                 all_permissions.extend(perms)
 
-            # Also check inline policies
             for inline in user.get('UserPolicyList', []):
+                policy_name = inline.get('PolicyName', 'inline')
                 inline_perms = self._extract_perms_from_doc(inline.get('PolicyDocument', {}))
                 all_permissions.extend(inline_perms)
+                
+                inline_policy_id = f"{user_arn}:policy:{policy_name}"
+                self._add_node(IAMNode(
+                    id=inline_policy_id, name=policy_name, type=EntityType.POLICY.value,
+                    provider="aws", account=self.account_id, props={'is_inline': True}
+                ))
+                self._add_edge(IAMEdge(
+                    source=inline_policy_id, target=user_arn,
+                    type=RelationType.ATTACHED_TO.value, props={'policy_name': policy_name}
+                ))
+                for perm in inline_perms[:20]:
+                    self._add_edge(IAMEdge(source=inline_policy_id, target=f"perm:{perm}",
+                                          type=RelationType.ALLOWS.value, props={'action': perm}))
 
-            # Classify permissions
             is_admin, is_overprivileged, risk_score, detected_services = \
                 PermissionClassifier.calculate_static_risk(all_permissions)
 
@@ -746,12 +802,17 @@ class AWSIAMScanner:
             )
             self._add_node(node)
 
-            # User -> Group edges
             for group_name in user.get('GroupList', []):
                 group_arn = f"arn:aws:iam::{self.account_id}:group/{group_name}"
                 self._add_edge(IAMEdge(source=user_arn, target=group_arn, type=RelationType.MEMBER_OF.value))
 
-            # Policy -> User edges
+            account_arn = f"arn:aws:iam::{self.account_id}:root"
+            self._add_node(IAMNode(
+                id=account_arn, name=self.account_id, type=EntityType.ACCOUNT.value,
+                provider="aws", account=self.account_id
+            ))
+            self._add_edge(IAMEdge(source=user_arn, target=account_arn, type="BELONGS_TO"))
+
             for policy in attached_policies:
                 self._add_edge(IAMEdge(
                     source=policy['PolicyArn'], target=user_arn,
@@ -759,7 +820,6 @@ class AWSIAMScanner:
                     props={'policy_name': policy['PolicyName']}
                 ))
 
-            # User -> AccessKey nodes
             for key in keys_with_usage:
                 key_node_id = f"{user_arn}:key:{key['key_id']}"
                 self._add_node(IAMNode(
@@ -774,7 +834,6 @@ class AWSIAMScanner:
                 ))
                 self._add_edge(IAMEdge(source=user_arn, target=key_node_id, type=RelationType.HAS_KEY.value))
 
-            # User -> MFA nodes
             for device in mfa_devices:
                 mfa_id = device['SerialNumber']
                 self._add_node(IAMNode(
@@ -792,15 +851,28 @@ class AWSIAMScanner:
             group_arn = group['Arn']
             attached = group.get('AttachedManagedPolicies', [])
 
-            # Extract actual permissions
             all_permissions = []
             for policy in attached:
-                perms = self._get_policy_permissions(policy['PolicyArn'], policy.get('DefaultVersionId', 'v1'))
+                perms = self._get_policy_permissions(policy['PolicyArn'], policy.get('DefaultVersionId'))
                 all_permissions.extend(perms)
 
             for inline in group.get('GroupPolicyList', []):
+                policy_name = inline.get('PolicyName', 'inline')
                 inline_perms = self._extract_perms_from_doc(inline.get('PolicyDocument', {}))
                 all_permissions.extend(inline_perms)
+                
+                inline_policy_id = f"{group_arn}:policy:{policy_name}"
+                self._add_node(IAMNode(
+                    id=inline_policy_id, name=policy_name, type=EntityType.POLICY.value,
+                    provider="aws", account=self.account_id, props={'is_inline': True}
+                ))
+                self._add_edge(IAMEdge(
+                    source=inline_policy_id, target=group_arn,
+                    type=RelationType.ATTACHED_TO.value, props={'policy_name': policy_name}
+                ))
+                for perm in inline_perms[:20]:
+                    self._add_edge(IAMEdge(source=inline_policy_id, target=f"perm:{perm}",
+                                          type=RelationType.ALLOWS.value, props={'action': perm}))
 
             is_admin, is_overprivileged, risk_score, detected_services = \
                 PermissionClassifier.calculate_static_risk(all_permissions)
@@ -841,15 +913,28 @@ class AWSIAMScanner:
 
             attached = role.get('AttachedManagedPolicies', [])
 
-            # Extract actual permissions
             all_permissions = []
             for policy in attached:
-                perms = self._get_policy_permissions(policy['PolicyArn'], policy.get('DefaultVersionId', 'v1'))
+                perms = self._get_policy_permissions(policy['PolicyArn'], policy.get('DefaultVersionId'))
                 all_permissions.extend(perms)
 
             for inline in role.get('RolePolicyList', []):
+                policy_name = inline.get('PolicyName', 'inline')
                 inline_perms = self._extract_perms_from_doc(inline.get('PolicyDocument', {}))
                 all_permissions.extend(inline_perms)
+                
+                inline_policy_id = f"{role_arn}:policy:{policy_name}"
+                self._add_node(IAMNode(
+                    id=inline_policy_id, name=policy_name, type=EntityType.POLICY.value,
+                    provider="aws", account=self.account_id, props={'is_inline': True}
+                ))
+                self._add_edge(IAMEdge(
+                    source=inline_policy_id, target=role_arn,
+                    type=RelationType.ATTACHED_TO.value, props={'policy_name': policy_name}
+                ))
+                for perm in inline_perms[:20]:
+                    self._add_edge(IAMEdge(source=inline_policy_id, target=f"perm:{perm}",
+                                          type=RelationType.ALLOWS.value, props={'action': perm}))
 
             is_admin, is_overprivileged, risk_score, detected_services = \
                 PermissionClassifier.calculate_static_risk(all_permissions)
@@ -886,11 +971,24 @@ class AWSIAMScanner:
 
             # Role -> Trust edges
             for principal in trusted:
+                target_id = "arn:aws:iam::*:*" if principal == '*' else principal
+                
+                # Ensure a node exists for the trusted principal so Cytoscape can render the edge
+                node_type = EntityType.SERVICE_ACCOUNT.value if '.amazonaws.com' in target_id else EntityType.ACCOUNT.value
+                self._add_node(IAMNode(
+                    id=target_id,
+                    name=target_id.split(':')[-1] if ':' in target_id else target_id,
+                    type=node_type,
+                    provider="aws",
+                    account=self.account_id,
+                    props={'description': 'Implicitly discovered trusted principal'}
+                ))
+
                 if principal == '*':
-                    self._add_edge(IAMEdge(source=role_arn, target="arn:aws:iam::*:*",
+                    self._add_edge(IAMEdge(source=role_arn, target=target_id,
                                           type=RelationType.TRUSTS.value, props={'trust_type': 'wildcard'}))
                 else:
-                    self._add_edge(IAMEdge(source=role_arn, target=principal,
+                    self._add_edge(IAMEdge(source=role_arn, target=target_id,
                                           type=RelationType.TRUSTS.value, props={'trust_type': 'principal'}))
 
             # Policy -> Role edges
@@ -901,7 +999,7 @@ class AWSIAMScanner:
     def _normalize_policies(self, policies: List[Dict]):
         for policy in policies:
             policy_arn = policy['Arn']
-            perms = self._get_policy_permissions(policy_arn, policy.get('DefaultVersionId', 'v1'))
+            perms = self._get_policy_permissions(policy_arn, policy.get('DefaultVersionId'))
 
             is_admin, is_overprivileged, risk_score, detected_services = \
                 PermissionClassifier.calculate_static_risk(perms)
@@ -1085,6 +1183,9 @@ class GCPIAMScanner:
             scopes=['https://www.googleapis.com/auth/cloud-platform']
         )
 
+        self.serviceusage_client = build('serviceusage', 'v1', credentials=self.credentials)
+        self._enable_required_apis()
+
         self.asset_client = build('cloudasset', 'v1', credentials=self.credentials)
         self.iam_client = build('iam', 'v1', credentials=self.credentials)
         self.crm_client = build('cloudresourcemanager', 'v1', credentials=self.credentials)
@@ -1094,14 +1195,38 @@ class GCPIAMScanner:
         self.edges = []
         self.node_ids = set()
 
-    def scan(self, scope: str = None, selected_compliances: List[str] = None) -> IAMGraph:
+    def _enable_required_apis(self):
+        """Automatically attempt to enable required GCP APIs to prevent 403 SERVICE_DISABLED errors."""
+        required_apis = [
+            'cloudasset.googleapis.com',
+            'cloudresourcemanager.googleapis.com',
+            'iam.googleapis.com'
+        ]
+        
+        try:
+            for api in required_apis:
+                try:
+                    self.serviceusage_client.services().enable(
+                        name=f"projects/{self.project_id}/services/{api}"
+                    ).execute()
+                except Exception as e:
+                    logger.warning(f"Could not auto-enable {api}. It may already be enabled or you lack 'serviceusage.services.enable' permission. Error: {e}")
+                    
+            # Small delay to allow GCP backend propagation if APIs were just enabled
+            import time
+            time.sleep(3)
+        except Exception as e:
+            logger.error(f"Failed during auto-enablement phase: {e}")
+
+    def scan(self, scope: str = None, selected_compliances: List[str] = None, scan_id: str = None) -> IAMGraph:
         if selected_compliances is None:
             selected_compliances = ['SOC2']
 
         if scope is None:
             scope = f"projects/{self.project_id}"
 
-        scan_id = f"gcp-{self.project_id}-{datetime.now(timezone.utc).strftime('%Y%m%d%H%M%S')}"
+        if scan_id is None:
+            scan_id = f"gcp-{self.project_id}-{datetime.now(timezone.utc).strftime('%Y%m%d%H%M%S')}"
         logger.info(f"GCP Scan {scan_id} starting for {scope}")
 
         try:
@@ -1109,6 +1234,8 @@ class GCPIAMScanner:
             service_accounts = self._get_service_accounts_with_keys()
             org_policies = self._get_org_policies()
             impersonation_paths = self._get_impersonation_paths(service_accounts)
+
+            logger.info(f"GCP: Collected {len(service_accounts)} service accounts, {len(policies)} policy bindings, {len(org_policies)} org policies, {len(impersonation_paths)} impersonation paths")
 
             self._normalize_service_accounts(service_accounts)
             self._normalize_policies(policies)
@@ -1155,7 +1282,36 @@ class GCPIAMScanner:
             self.nodes.append(asdict(node))
             self.node_ids.add(node.id)
 
+    def _ensure_node_exists(self, node_id: str):
+        if node_id not in self.node_ids:
+            if node_id.startswith('perm:'):
+                n_type = EntityType.PERMISSION_SET.value
+                n_name = node_id.split(':', 1)[-1]
+            elif node_id.startswith('serviceAccount:'):
+                n_type = EntityType.SERVICE_ACCOUNT.value
+                n_name = node_id.split(':')[-1]
+            elif node_id.startswith('user:'):
+                n_type = EntityType.USER.value
+                n_name = node_id.split(':')[-1]
+            elif node_id.startswith('group:'):
+                n_type = EntityType.GROUP.value
+                n_name = node_id.split(':')[-1]
+            else:
+                n_type = EntityType.RESOURCE.value
+                n_name = node_id.split(':')[-1] if ':' in node_id else node_id
+
+            self._add_node(IAMNode(
+                id=node_id,
+                name=n_name,
+                type=n_type,
+                provider="gcp",
+                account=self.project_id,
+                props={'description': 'Implicitly discovered entity'}
+            ))
+
     def _add_edge(self, edge: IAMEdge):
+        self._ensure_node_exists(edge.source)
+        self._ensure_node_exists(edge.target)
         self.edges.append(asdict(edge))
 
     def _get_all_policies(self, scope: str) -> List[Dict]:
@@ -1321,7 +1477,13 @@ class GCPIAMScanner:
                 role = binding['role']
                 role_id = f"gcp:role:{role}"
 
-                is_admin = 'admin' in role or 'owner' in role or 'editor' in role
+                role_lower = role.lower()
+                is_admin = 'admin' in role_lower or 'owner' in role_lower or 'editor' in role_lower
+                is_overprivileged = is_admin or any(x in role_lower for x in [
+                    'serviceaccountuser', 'serviceaccounttokencreator', 'serviceaccountkeyadmin',
+                    'iam.securityadmin', 'iam.roleadmin', 'iam.workloadidentitypooladmin'
+                ])
+                
                 self._add_node(IAMNode(
                     id=role_id,
                     name=role.split('/')[-1],
@@ -1329,6 +1491,7 @@ class GCPIAMScanner:
                     provider="gcp",
                     account=self.project_id,
                     is_admin=is_admin,
+                    is_overprivileged=is_overprivileged,
                     props={'full_role': role}
                 ))
 
@@ -1427,40 +1590,57 @@ class Neo4jImporter:
         self.driver.close()
 
     def import_graph(self, graph: IAMGraph, clear_existing: bool = False):
-        """Import graph using standard Cypher CREATE/MERGE."""
         logger.info(f"Importing {graph.stats['total_nodes']} nodes, {graph.stats['total_edges']} edges")
 
         with self.driver.session() as session:
             if clear_existing:
                 session.run("MATCH (n) WHERE n.scan_id = $scan_id DETACH DELETE n", scan_id=graph.scan_id)
 
-            # Create Scan node
             session.run("""
                 CREATE (s:Scan {scan_id: $scan_id, provider: $provider, account: $account, scanned_at: $scanned_at})
             """, scan_id=graph.scan_id, provider=graph.provider, account=graph.account, scanned_at=graph.scanned_at)
 
-            # Batch create nodes using UNWIND (standard Cypher)
-            for batch in [graph.nodes[i:i+500] for i in range(0, len(graph.nodes), 500)]:
-                for node in batch:
-                    node['scan_id'] = graph.scan_id
+            import json
+            def sanitize_props(item):
+                sanitized = {}
+                for k, v in item.items():
+                    if isinstance(v, dict):
+                        sanitized[k] = json.dumps(v)
+                    elif isinstance(v, list):
+                        if len(v) > 0 and isinstance(v[0], dict):
+                            sanitized[k] = json.dumps(v)
+                        else:
+                            sanitized[k] = v
+                    else:
+                        sanitized[k] = v
+                return sanitized
 
+            sanitized_nodes = []
+            for node in graph.nodes:
+                node_copy = node.copy()
+                node_copy['scan_id'] = graph.scan_id
+                sanitized_nodes.append(sanitize_props(node_copy))
+                
+            for batch in [sanitized_nodes[i:i+500] for i in range(0, len(sanitized_nodes), 500)]:
                 session.run("""
                     UNWIND $nodes AS node
                     CREATE (n:Entity)
                     SET n = node
-                    SET n:_EntityType
                 """, nodes=batch)
 
-            # Create indices for performance
             session.run("CREATE INDEX entity_id_idx IF NOT EXISTS FOR (e:Entity) ON (e.id)")
             session.run("CREATE INDEX scan_id_idx IF NOT EXISTS FOR (s:Scan) ON (s.scan_id)")
             session.run("CREATE INDEX entity_type_idx IF NOT EXISTS FOR (e:Entity) ON (e.type)")
 
-            # Batch create relationships
-            for batch in [graph.edges[i:i+500] for i in range(0, len(graph.edges), 500)]:
-                for edge in batch:
-                    edge['scan_id'] = graph.scan_id
+            sanitized_edges = []
+            for edge in graph.edges:
+                edge_copy = edge.copy()
+                edge_copy['scan_id'] = graph.scan_id
+                if 'props' in edge_copy and isinstance(edge_copy['props'], dict):
+                    edge_copy['props'] = sanitize_props(edge_copy['props'])
+                sanitized_edges.append(edge_copy)
 
+            for batch in [sanitized_edges[i:i+500] for i in range(0, len(sanitized_edges), 500)]:
                 session.run("""
                     UNWIND $edges AS edge
                     MATCH (a:Entity {id: edge.source, scan_id: edge.scan_id})
@@ -1478,13 +1658,13 @@ class IAMScanner:
         self.neo4j = Neo4jImporter(neo4j_uri, neo4j_user, neo4j_password)
 
     def scan_aws(self, access_key: str, secret_key: str, region: str = "us-east-1",
-                 selected_compliances: List[str] = None) -> IAMGraph:
+                 selected_compliances: List[str] = None, scan_id: str = None) -> IAMGraph:
         if selected_compliances is None:
             selected_compliances = ['SOC2']
 
         try:
             scanner = AWSIAMScanner(access_key, secret_key, region)
-            graph = scanner.scan(selected_compliances)
+            graph = scanner.scan(selected_compliances=selected_compliances, scan_id=scan_id)
 
             if not graph.stats.get('error'):
                 graph.to_json(f"/tmp/{graph.scan_id}.json")
@@ -1504,13 +1684,13 @@ class IAMScanner:
             )
 
     def scan_gcp(self, service_account_json: str, project_id: str = None,
-                 selected_compliances: List[str] = None) -> IAMGraph:
+                 selected_compliances: List[str] = None, scan_id: str = None) -> IAMGraph:
         if selected_compliances is None:
             selected_compliances = ['SOC2']
 
         try:
             scanner = GCPIAMScanner(service_account_json, project_id)
-            graph = scanner.scan(selected_compliances=selected_compliances)
+            graph = scanner.scan(selected_compliances=selected_compliances, scan_id=scan_id)
 
             if not graph.stats.get('error'):
                 graph.to_json(f"/tmp/{graph.scan_id}.json")

@@ -4,6 +4,7 @@ import { useAuth } from "@clerk/nextjs";
 import { useEffect, useState } from "react";
 import { AppShell } from "@/components/app-shell";
 import { ScreenHeader } from "@/components/screen-header";
+import { ClipboardList, ShieldAlert } from "lucide-react";
 
 type ScanData = {
   id: number;
@@ -22,7 +23,7 @@ const REPORT_TYPES = [
       "A comprehensive PDF report mapping IAM findings to SOC 2 (CC6.1, CC6.2), RBI (7.1, 7.2), and DPDP Act (Section 8) controls. Includes gap analysis, risk scores, and audit-ready evidence.",
     accentClass: "action-box-cyan",
     filename: "compliance_report",
-    icon: "📋",
+    icon: <ClipboardList className="h-6 w-6 text-white" />,
   },
   {
     key: "remediation" as const,
@@ -32,7 +33,7 @@ const REPORT_TYPES = [
       "A prioritized remediation plan with specific IAM policy changes, permission removals, MFA enforcement recommendations, and zombie resource decommissioning steps — ordered by risk score impact.",
     accentClass: "action-box-gold",
     filename: "remediation_report",
-    icon: "🛡️",
+    icon: <ShieldAlert className="h-6 w-6 text-white" />,
   },
 ];
 
@@ -119,7 +120,7 @@ export default function ReportsPage() {
             >
               <div>
                 <div className="flex items-center gap-3">
-                  <span className="text-2xl">{report.icon}</span>
+                  <span className="flex h-10 w-10 items-center justify-center rounded-full border border-white/10 bg-[#12161d] shadow-sm">{report.icon}</span>
                   <p className="font-[family:var(--font-plex-mono)] text-[0.65rem] font-medium uppercase tracking-[0.22em] text-slate-400">
                     {report.label}
                   </p>

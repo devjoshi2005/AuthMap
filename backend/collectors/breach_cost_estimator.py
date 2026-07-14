@@ -336,3 +336,15 @@ class BreachCostEstimator:
         cap = 500_000_000
         return (min(max_penalty, cap), (min(low_estimate, cap), min(high_estimate, cap)))
 
+
+
+if __name__ == "__main__":
+    estimator = BreachCostEstimator()
+    result = estimator.estimate(
+        service=ServiceType.CLOUD_SQL,
+        region=Region.INDIA,
+        compliance_frameworks=[ComplianceFramework.RBI, ComplianceFramework.DPDP, ComplianceFramework.PCI_DSS],
+        estimated_records_exposed=500_000,
+        data_sensitivity=DataSensitivity.CRITICAL,
+    )
+    print(json.dumps(result.to_dict(), indent=2))

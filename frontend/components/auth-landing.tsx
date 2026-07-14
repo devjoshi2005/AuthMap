@@ -4,7 +4,7 @@ import { useAuth } from "@clerk/nextjs";
 import Link from "next/link";
 
 import { BrandLogo } from "@/components/brand-logo";
-import { DeferredPrism } from "@/components/deferred-prism";
+import { GridScan } from "@/components/grid-scan";
 
 type AuthLandingProps = {
   isSignedIn?: boolean;
@@ -20,22 +20,18 @@ export function AuthLanding({ isSignedIn = false }: AuthLandingProps) {
   return (
     <main className="relative flex min-h-screen flex-col overflow-hidden text-white bg-[rgba(13,16,21,1)]">
       {/* Animated background layers */}
-      <div className="pointer-events-none absolute inset-0 opacity-65">
-        <DeferredPrism
-          animationType="rotate"
-          timeScale={0.24}
-          height={3.35}
-          baseWidth={4.45}
-          scale={3.18}
-          hueShift={0.12}
-          colorFrequency={1.08}
-          noise={0.04}
-          glow={0.92}
-          bloom={0.88}
-          maxDpr={1}
-          steps={48}
-          targetFps={30}
-          suspendWhenOffscreen
+      <div className="pointer-events-none absolute inset-0 opacity-100 mix-blend-screen">
+        <GridScan
+          sensitivity={0.55}
+          lineThickness={1}
+          linesColor="#94a3b8"
+          gridScale={0.1}
+          scanColor="#cbd5e1"
+          scanOpacity={0.4}
+          enablePost={true}
+          bloomIntensity={0.6}
+          chromaticAberration={0.001}
+          noiseIntensity={0.01}
         />
       </div>
       <div className="pointer-events-none absolute inset-0 bg-[radial-gradient(circle_at_18%_14%,rgba(158,193,182,0.16),transparent_22%),radial-gradient(circle_at_82%_20%,rgba(203,142,119,0.15),transparent_20%),radial-gradient(circle_at_50%_38%,rgba(255,255,255,0.08),transparent_28%),linear-gradient(180deg,rgba(13,16,21,0.72),rgba(13,16,21,0.94))]" />

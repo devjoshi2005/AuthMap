@@ -5,6 +5,7 @@ import { useEffect, useState } from "react";
 import Link from "next/link";
 import { AppShell } from "@/components/app-shell";
 import { ScreenHeader } from "@/components/screen-header";
+import { BarChart3, Zap } from "lucide-react";
 
 /* ── Types ─────────────────────────────────────────────── */
 interface CostPath {
@@ -26,6 +27,7 @@ interface CostAnalysis {
   total_estimated_breach_cost: number;
   max_regulatory_penalty: number;
   avg_per_record_cost: number;
+  max_risk_score: number;
   paths: CostPath[];
   compliance_penalties: CompliancePenalty[];
 }
@@ -94,10 +96,10 @@ export default function CostMatrixPage() {
   }, [getToken]);
 
   /* ── Quadrant classification ───────────────────────── */
-  const riskThreshold = costData ? Math.max(50, ...costData.paths.map((p) => p.risk_score)) * 0.5 : 50;
-  const costThreshold = costData ? Math.max(10000, ...costData.paths.map((p) => p.estimated_cost)) * 0.5 : 10000;
+  const riskThreshold = costData?.paths?.length ? Math.max(50, ...costData.paths.map((p) => p.risk_score)) * 0.5 : 50;
+  const costThreshold = costData?.paths?.length ? Math.max(10000, ...costData.paths.map((p) => p.estimated_cost)) * 0.5 : 10000;
 
-  const quadrants = costData
+  const quadrants = costData?.paths
     ? {
         hh: costData.paths.filter((p) => p.risk_score >= riskThreshold && p.estimated_cost >= costThreshold),
         lh: costData.paths.filter((p) => p.risk_score >= riskThreshold && p.estimated_cost < costThreshold),
@@ -125,7 +127,7 @@ export default function CostMatrixPage() {
           <section className="rounded-[2rem] border border-white/10 bg-[linear-gradient(180deg,rgba(255,255,255,0.04),rgba(255,255,255,0.02))] p-6 shadow-[0_20px_50px_rgba(0,0,0,0.18)] md:p-8">
             <div className="flex flex-col items-center justify-center gap-6 py-20">
               <div className="flex h-24 w-24 items-center justify-center rounded-full border border-[var(--accent-gold)]/30 bg-[rgba(234,216,178,0.08)]">
-                <span className="text-4xl">📊</span>
+                <BarChart3 className="h-10 w-10 text-[var(--accent-gold)]" />
               </div>
               <div className="text-center">
                 <h2 className="text-2xl font-semibold text-white">Cost-risk scatter plot loading zone</h2>
@@ -167,8 +169,64 @@ export default function CostMatrixPage() {
 
         {!loading && costData && (
           <>
+            {/* SGTC Breakdown Section */}
+            <section className="rounded-[1.75rem] border border-white/10 bg-white/[0.03] p-6 shadow-[0_18px_50px_rgba(0,0,0,0.24)]">
+              <div className="flex items-center gap-3 mb-6">
+                <span className="flex h-10 w-10 items-center justify-center rounded-full border border-white/10 bg-[#12161d] text-lg font-bold text-white shadow-sm">
+                </span>
+                <div>
+                  <h3 className="text-xl font-bold text-white tracking-tight">SGTC Risk Engine</h3>
+                  <p className="text-sm text-slate-400 mt-1">
+                    Risk scores are mathematically derived from a weighted blend of four dimensions (SGTC).
+                  </p>
+                </div>
+              </div>
+              <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
+                <div className="rounded-xl border border-white/10 bg-[#0a0d12]/50 p-5">
+                  <div className="flex items-center gap-2 mb-2">
+                    <span className="text-[var(--accent-cyan)] font-bold text-lg">S</span>
+                    <span className="font-semibold text-white tracking-wide">Static</span>
+                  </div>
+                  <p className="text-xs text-slate-400 mb-3 font-medium">(40% Weight)</p>
+                  <p className="text-sm leading-relaxed text-slate-300">
+                    Evaluates absolute permissions (e.g., <code className="text-xs bg-black/50 px-1 rounded">iam:PassRole</code>). Blends the highest severity permission (60%) with the average permission risk (40%).
+                  </p>
+                </div>
+                <div className="rounded-xl border border-white/10 bg-[#0a0d12]/50 p-5">
+                  <div className="flex items-center gap-2 mb-2">
+                    <span className="text-[var(--accent-magenta)] font-bold text-lg">G</span>
+                    <span className="font-semibold text-white tracking-wide">Graph</span>
+                  </div>
+                  <p className="text-xs text-slate-400 mb-3 font-medium">(30% Weight)</p>
+                  <p className="text-sm leading-relaxed text-slate-300">
+                    Measures topological blast radius. Accounts for proximity to highly privileged entities, chain length to admin roles, and overprivileged trusts.
+                  </p>
+                </div>
+                <div className="rounded-xl border border-white/10 bg-[#0a0d12]/50 p-5">
+                  <div className="flex items-center gap-2 mb-2">
+                    <span className="text-[var(--accent-gold)] font-bold text-lg">T</span>
+                    <span className="font-semibold text-white tracking-wide">Temporal</span>
+                  </div>
+                  <p className="text-xs text-slate-400 mb-3 font-medium">(20% Weight)</p>
+                  <p className="text-sm leading-relaxed text-slate-300">
+                    Analyzes behavioral anomalies using Machine Learning (Isolation Forests) on CloudTrail/Audit Logs to detect unusual temporal activity spikes.
+                  </p>
+                </div>
+                <div className="rounded-xl border border-white/10 bg-[#0a0d12]/50 p-5">
+                  <div className="flex items-center gap-2 mb-2">
+                    <span className="text-red-400 font-bold text-lg">C</span>
+                    <span className="font-semibold text-white tracking-wide">Cost</span>
+                  </div>
+                  <p className="text-xs text-slate-400 mb-3 font-medium">(10% Weight)</p>
+                  <p className="text-sm leading-relaxed text-slate-300">
+                    Translates technical risk into financial exposure. Normalizes the estimated data breach cost penalty against your annual revenue logic.
+                  </p>
+                </div>
+              </div>
+            </section>
+
             {/* Summary cards */}
-            <section className="grid gap-4 sm:grid-cols-3">
+            <section className="grid gap-4 sm:grid-cols-4">
               <div className="rounded-[1.75rem] border border-white/10 bg-white/[0.03] p-6 shadow-[0_18px_50px_rgba(0,0,0,0.24)]">
                 <p className="font-[family:var(--font-plex-mono)] text-[0.6rem] font-medium uppercase tracking-[0.22em] text-slate-400">
                   Total Estimated Breach Cost
@@ -193,10 +251,18 @@ export default function CostMatrixPage() {
                   ${costData.avg_per_record_cost.toFixed(2)}
                 </p>
               </div>
+              <div className="rounded-[1.75rem] border border-white/10 bg-white/[0.03] p-6 shadow-[0_18px_50px_rgba(0,0,0,0.24)]">
+                <p className="font-[family:var(--font-plex-mono)] text-[0.6rem] font-medium uppercase tracking-[0.22em] text-slate-400">
+                  Max SGTC Risk Score
+                </p>
+                <p className="mt-3 text-3xl font-semibold text-[var(--accent-cyan)]">
+                  {costData.max_risk_score ? costData.max_risk_score.toFixed(1) : "0.0"} <span className="text-sm font-medium text-slate-500">/ 100</span>
+                </p>
+              </div>
             </section>
 
             {/* Per-path cost table */}
-            {costData.paths.length > 0 && (
+            {costData.paths && costData.paths.length > 0 && (
               <section className="rounded-[1.75rem] border border-white/10 bg-white/[0.03] p-6 shadow-[0_18px_50px_rgba(0,0,0,0.24)]">
                 <p className="font-[family:var(--font-plex-mono)] text-[0.68rem] font-medium uppercase tracking-[0.24em] text-slate-400">
                   Per-Path Cost Breakdown

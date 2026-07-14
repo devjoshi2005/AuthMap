@@ -6,6 +6,7 @@ import Link from "next/link";
 import cytoscape from "cytoscape";
 import { AppShell } from "@/components/app-shell";
 import { ScreenHeader } from "@/components/screen-header";
+import { Network } from "lucide-react";
 
 /* ── Types ─────────────────────────────────────────────── */
 interface GraphNode {
@@ -43,7 +44,7 @@ interface AttackPath {
 const TYPE_COLORS: Record<string, string> = {
   User: "#9ec1b6",
   Role: "#ead8b2",
-  Group: "#ffffff44",
+  Group: "rgba(255, 255, 255, 0.26)",
   Policy: "#cb8e77",
   ServiceAccount: "#7bc8a4",
   PermissionSet: "#a89ecf",
@@ -55,27 +56,27 @@ const TYPE_COLORS: Record<string, string> = {
   Event: "#ff7f50",
 };
 
-/* ── Cytoscape stylesheet ──────────────────────────────── */
-const stylesheet: cytoscape.Stylesheet[] = [
+const cyStylesheet: cytoscape.StylesheetStyle[] = [
   {
     selector: "node",
     style: {
-      label: "data(label)",
-      "text-valign": "bottom",
-      "text-halign": "center",
+      "label": "data(label)",
+      "text-valign": "bottom" as const,
+      "text-halign": "center" as const,
       "font-size": "10px",
-      color: "#f5efe6",
+      "color": "#f5efe6",
       "text-outline-color": "#0d1015",
       "text-outline-width": 2,
-      width: "mapData(risk_score, 0, 100, 30, 70)",
-      height: "mapData(risk_score, 0, 100, 30, 70)",
+      "width": "mapData(risk_score,0,100,30,70)",
+      "height": "mapData(risk_score,0,100,30,70)",
       "border-width": 2,
-      "border-color": "#ffffff22",
+      "border-color": "rgba(255, 255, 255, 0.13)",
+      "background-color": "#666",
     },
   },
   { selector: 'node[type="User"]', style: { "background-color": "#9ec1b6" } },
   { selector: 'node[type="Role"]', style: { "background-color": "#ead8b2" } },
-  { selector: 'node[type="Group"]', style: { "background-color": "#ffffff44" } },
+  { selector: 'node[type="Group"]', style: { "background-color": "rgba(255, 255, 255, 0.26)" } },
   { selector: 'node[type="Policy"]', style: { "background-color": "#cb8e77" } },
   { selector: 'node[type="ServiceAccount"]', style: { "background-color": "#7bc8a4" } },
   { selector: 'node[type="PermissionSet"]', style: { "background-color": "#a89ecf" } },
@@ -93,14 +94,15 @@ const stylesheet: cytoscape.Stylesheet[] = [
     selector: "edge",
     style: {
       width: 1.5,
-      "line-color": "#ffffff18",
-      "target-arrow-color": "#ffffff30",
+      "line-color": "rgba(255, 255, 255, 0.09)",
+      "target-arrow-color": "rgba(255, 255, 255, 0.18)",
       "target-arrow-shape": "triangle",
       "curve-style": "bezier",
       "arrow-scale": 0.8,
       label: "data(label)",
+      
       "font-size": "7px",
-      color: "#ffffff44",
+      color: "rgba(255, 255, 255, 0.26)",
       "text-rotation": "autorotate",
     },
   },
@@ -162,7 +164,14 @@ export default function GraphPage() {
         ]);
 
         if (graphRes.ok) {
-          const gd: GraphData = await graphRes.json();
+          const raw = await graphRes.json();
+          // Backend returns { elements: { nodes: [{data:{...}}], edges: [{data:{...}}] }, stats: {} }
+          const rawNodes = raw.elements?.nodes ?? raw.nodes ?? [];
+          const rawEdges = raw.elements?.edges ?? raw.edges ?? [];
+          const gd: GraphData = {
+            nodes: rawNodes.map((n: { data?: GraphNode } & GraphNode) => n.data ?? n),
+            edges: rawEdges.map((e: { data?: GraphEdge } & GraphEdge) => e.data ?? e),
+          };
           setGraphData(gd);
 
           const types = [...new Set(gd.nodes.map((n) => n.type))].sort();
@@ -189,7 +198,6 @@ export default function GraphPage() {
     load();
   }, [getToken]);
 
-  /* ── Cytoscape init ────────────────────────────────── */
   useEffect(() => {
     if (!graphData || !cyRef.current) return;
 
@@ -218,24 +226,35 @@ export default function GraphPage() {
       })),
     ];
 
+    // Ensure the container has explicit dimensions before Cytoscape init
+    // (mapData and other style functions fail if container is 0×0)
+    const container = cyRef.current;
+    if (!container.offsetHeight) {
+      container.style.minHeight = "600px";
+    }
+
     const cy = cytoscape({
-      container: cyRef.current,
+      container,
       elements,
-      style: stylesheet,
+      style: cyStylesheet,
       layout: {
         name: "cose",
         animate: true,
         animationDuration: 800,
-        nodeRepulsion: () => 8000,
-        idealEdgeLength: () => 120,
-        edgeElasticity: () => 100,
-        gravity: 0.25,
+        nodeRepulsion: () => 400000,
+        idealEdgeLength: () => 250,
+        edgeElasticity: () => 50,
+        gravity: 0.15,
+        numIter: 1000,
         padding: 50,
       } as cytoscape.CoseLayoutOptions,
       minZoom: 0.15,
       maxZoom: 3,
-      wheelSensitivity: 0.25,
+      wheelSensitivity: 0.2, // Essential for smooth zooming on 1000+ node graphs
     });
+
+    // Force the style engine to parse and apply all rules immediately
+    cy.style().fromJson(cyStylesheet).update();
 
     cy.on("tap", "node", (evt) => {
       const d = evt.target.data();
@@ -248,7 +267,12 @@ export default function GraphPage() {
     cyInstanceRef.current = cy;
 
     return () => {
-      cy.destroy();
+      if (cy) {
+        cy.unmount();
+        if (!cy.destroyed()) {
+          cy.destroy();
+        }
+      }
       cyInstanceRef.current = null;
     };
     // Only re-init when graphData reference changes
@@ -258,42 +282,46 @@ export default function GraphPage() {
   /* ── Filter visibility ─────────────────────────────── */
   useEffect(() => {
     const cy = cyInstanceRef.current;
-    if (!cy) return;
-    cy.nodes().forEach((node) => {
-      const type = node.data("type") as string;
-      if (hiddenTypes.has(type)) {
-        node.style("display", "none");
-      } else {
-        node.style("display", "element");
-      }
+    if (!cy || cy.destroyed()) return;
+    
+    cy.batch(() => {
+      cy.nodes().forEach((node) => {
+        const type = node.data("type") as string;
+        if (hiddenTypes.has(type)) {
+          node.style("display", "none");
+        } else {
+          node.style("display", "element");
+        }
+      });
     });
   }, [hiddenTypes]);
 
   /* ── Attack path toggle ────────────────────────────── */
   useEffect(() => {
     const cy = cyInstanceRef.current;
-    if (!cy) return;
+    if (!cy || cy.destroyed()) return;
 
-    cy.elements().removeClass("attack-path attack-path-node");
+    cy.batch(() => {
+      cy.elements().removeClass("attack-path attack-path-node");
 
-    if (showAttackPaths && attackPaths.length > 0) {
-      attackPaths.forEach((ap) => {
-        const path = ap.path;
-        for (let i = 0; i < path.length; i++) {
-          const node = cy.getElementById(path[i]);
-          if (node.length) node.addClass("attack-path-node");
-          if (i < path.length - 1) {
-            const edges = cy.edges(`[source="${path[i]}"][target="${path[i + 1]}"]`);
-            edges.addClass("attack-path");
-            const reverseEdges = cy.edges(`[source="${path[i + 1]}"][target="${path[i]}"]`);
-            reverseEdges.addClass("attack-path");
+      if (showAttackPaths && attackPaths.length > 0) {
+        attackPaths.forEach((ap) => {
+          const path = ap.path_nodes?.nodes || ap.path || [];
+          for (let i = 0; i < path.length; i++) {
+            const node = cy.getElementById(path[i]);
+            if (node.length) node.addClass("attack-path-node");
+            if (i < path.length - 1) {
+              const edges = cy.edges(`[source="${path[i]}"][target="${path[i + 1]}"]`);
+              edges.addClass("attack-path");
+              const reverseEdges = cy.edges(`[source="${path[i + 1]}"][target="${path[i]}"]`);
+              reverseEdges.addClass("attack-path");
+            }
           }
-        }
-      });
-    }
+        });
+      }
+    });
   }, [showAttackPaths, attackPaths]);
 
-  /* ── Zoom controls ─────────────────────────────────── */
   const handleZoomIn = useCallback(() => {
     const cy = cyInstanceRef.current;
     if (cy) cy.zoom({ level: cy.zoom() * 1.3, renderedPosition: { x: cy.width() / 2, y: cy.height() / 2 } });
@@ -303,7 +331,6 @@ export default function GraphPage() {
     if (cy) cy.zoom({ level: cy.zoom() / 1.3, renderedPosition: { x: cy.width() / 2, y: cy.height() / 2 } });
   }, []);
 
-  /* ── Toggle entity type ────────────────────────────── */
   function toggleType(type: string) {
     setHiddenTypes((prev) => {
       const next = new Set(prev);
@@ -313,7 +340,6 @@ export default function GraphPage() {
     });
   }
 
-  /* ── Risk color helper ─────────────────────────────── */
   function riskColor(score?: number): string {
     if (!score && score !== 0) return "text-slate-400";
     if (score >= 80) return "text-red-400";
@@ -322,7 +348,6 @@ export default function GraphPage() {
     return "text-green-400";
   }
 
-  /* ── Render ────────────────────────────────────────── */
   return (
     <AppShell>
       <div className="space-y-6 pb-10">
@@ -342,7 +367,7 @@ export default function GraphPage() {
           <section className="rounded-[2rem] border border-white/10 bg-[linear-gradient(180deg,rgba(255,255,255,0.04),rgba(255,255,255,0.02))] p-6 shadow-[0_20px_50px_rgba(0,0,0,0.18)] md:p-8">
             <div className="flex flex-col items-center justify-center gap-6 py-20">
               <div className="flex h-24 w-24 items-center justify-center rounded-full border border-[var(--accent-cyan)]/30 bg-[rgba(158,193,182,0.08)]">
-                <span className="text-4xl">🕸️</span>
+                <Network className="h-10 w-10 text-[var(--accent-cyan)]" />
               </div>
               <div className="text-center">
                 <h2 className="text-2xl font-semibold text-white">Graph visualization loading zone</h2>
@@ -403,10 +428,6 @@ export default function GraphPage() {
                         : "border-white/15 bg-white/[0.05] text-white"
                     }`}
                   >
-                    <span
-                      className="inline-block h-2.5 w-2.5 rounded-full"
-                      style={{ backgroundColor: isHidden ? "#333" : color }}
-                    />
                     {type}
                   </button>
                 );
@@ -422,32 +443,31 @@ export default function GraphPage() {
                       : "border-white/15 bg-white/[0.05] text-white"
                   }`}
                 >
-                  <span className="inline-block h-2.5 w-2.5 rounded-full bg-red-500" />
                   {showAttackPaths ? "Hide Attack Paths" : "Show Attack Paths"}
                 </button>
               )}
             </div>
 
-            {/* Graph container */}
             <div className="relative rounded-[2rem] border border-white/10 bg-[#0a0d12] overflow-hidden">
               <div
                 ref={cyRef}
-                className="min-h-[calc(100vh-280px)] w-full"
+                style={{ width: "100%", height: "calc(100vh - 280px)", minHeight: "600px" }}
               />
 
-              {/* Zoom controls */}
-              <div className="absolute bottom-4 right-4 flex flex-col gap-2">
+              <div className="absolute bottom-6 right-6 flex flex-col gap-3 z-50">
                 <button
                   type="button"
                   onClick={handleZoomIn}
-                  className="flex h-9 w-9 items-center justify-center rounded-full border border-white/15 bg-[#12161d]/90 text-lg font-bold text-white backdrop-blur-sm transition hover:border-white/30"
+                  className="flex h-12 w-12 items-center justify-center rounded-full border border-white/20 bg-[#2a303c] shadow-lg shadow-black/50 text-2xl font-bold text-white transition hover:bg-[#3b4354] hover:border-white/40"
+                  aria-label="Zoom In"
                 >
                   +
                 </button>
                 <button
                   type="button"
                   onClick={handleZoomOut}
-                  className="flex h-9 w-9 items-center justify-center rounded-full border border-white/15 bg-[#12161d]/90 text-lg font-bold text-white backdrop-blur-sm transition hover:border-white/30"
+                  className="flex h-12 w-12 items-center justify-center rounded-full border border-white/20 bg-[#2a303c] shadow-lg shadow-black/50 text-2xl font-bold text-white transition hover:bg-[#3b4354] hover:border-white/40"
+                  aria-label="Zoom Out"
                 >
                   −
                 </button>

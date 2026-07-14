@@ -19,6 +19,38 @@ const COST_REGIONS = [
   { value: "BRAZIL", label: "Brazil" },
 ];
 
+const AWS_REGIONS = [
+  { value: "us-east-1", label: "us-east-1 (N. Virginia)" },
+  { value: "us-east-2", label: "us-east-2 (Ohio)" },
+  { value: "us-west-1", label: "us-west-1 (N. California)" },
+  { value: "us-west-2", label: "us-west-2 (Oregon)" },
+  { value: "af-south-1", label: "af-south-1 (Cape Town)" },
+  { value: "ap-east-1", label: "ap-east-1 (Hong Kong)" },
+  { value: "ap-south-1", label: "ap-south-1 (Mumbai)" },
+  { value: "ap-south-2", label: "ap-south-2 (Hyderabad)" },
+  { value: "ap-northeast-3", label: "ap-northeast-3 (Osaka)" },
+  { value: "ap-northeast-2", label: "ap-northeast-2 (Seoul)" },
+  { value: "ap-southeast-1", label: "ap-southeast-1 (Singapore)" },
+  { value: "ap-southeast-2", label: "ap-southeast-2 (Sydney)" },
+  { value: "ap-southeast-3", label: "ap-southeast-3 (Jakarta)" },
+  { value: "ap-southeast-4", label: "ap-southeast-4 (Melbourne)" },
+  { value: "ap-northeast-1", label: "ap-northeast-1 (Tokyo)" },
+  { value: "ca-central-1", label: "ca-central-1 (Central)" },
+  { value: "ca-west-1", label: "ca-west-1 (Calgary)" },
+  { value: "eu-central-1", label: "eu-central-1 (Frankfurt)" },
+  { value: "eu-west-1", label: "eu-west-1 (Ireland)" },
+  { value: "eu-west-2", label: "eu-west-2 (London)" },
+  { value: "eu-south-1", label: "eu-south-1 (Milan)" },
+  { value: "eu-south-2", label: "eu-south-2 (Spain)" },
+  { value: "eu-west-3", label: "eu-west-3 (Paris)" },
+  { value: "eu-north-1", label: "eu-north-1 (Stockholm)" },
+  { value: "eu-central-2", label: "eu-central-2 (Zurich)" },
+  { value: "il-central-1", label: "il-central-1 (Tel Aviv)" },
+  { value: "me-south-1", label: "me-south-1 (Bahrain)" },
+  { value: "me-central-1", label: "me-central-1 (UAE)" },
+  { value: "sa-east-1", label: "sa-east-1 (São Paulo)" }
+];
+
 const COMPLIANCE_FRAMEWORKS = [
   { value: "SOC2", label: "SOC 2" },
   { value: "DPDP", label: "DPDP" },
@@ -48,7 +80,6 @@ export default function ScanWizardPage() {
   const [awsRegion, setAwsRegion] = useState("us-east-1");
   const [gcpProjectId, setGcpProjectId] = useState("");
   const [gcpServiceAccountKey, setGcpServiceAccountKey] = useState("");
-  const [scanDepth, setScanDepth] = useState<"quick" | "standard" | "deep">("standard");
   const [neo4jUri, setNeo4jUri] = useState("");
   const [neo4jUsername, setNeo4jUsername] = useState("");
   const [neo4jPassword, setNeo4jPassword] = useState("");
@@ -84,6 +115,38 @@ export default function ScanWizardPage() {
       }
     };
   }, []);
+
+  // Hydrate credentials from localStorage on mount
+  useEffect(() => {
+    const saved = localStorage.getItem('boxai_scan_creds');
+    if (saved) {
+      try {
+        const data = JSON.parse(saved);
+        if (data.provider) setProvider(data.provider);
+        if (data.awsAccessKeyId) setAwsAccessKeyId(data.awsAccessKeyId);
+        if (data.awsSecretKey) setAwsSecretKey(data.awsSecretKey);
+        if (data.awsRegion) setAwsRegion(data.awsRegion);
+        if (data.gcpProjectId) setGcpProjectId(data.gcpProjectId);
+        if (data.gcpServiceAccountKey) setGcpServiceAccountKey(data.gcpServiceAccountKey);
+        if (data.neo4jUri) setNeo4jUri(data.neo4jUri);
+        if (data.neo4jUsername) setNeo4jUsername(data.neo4jUsername);
+        if (data.neo4jPassword) setNeo4jPassword(data.neo4jPassword);
+        if (data.neo4jProjectId) setNeo4jProjectId(data.neo4jProjectId);
+        if (data.costRegion) setCostRegion(data.costRegion);
+        if (data.annualRevenue) setAnnualRevenue(data.annualRevenue);
+        if (data.compliances) setCompliances(data.compliances);
+      } catch (e) {}
+    }
+  }, []);
+
+  // Save credentials to localStorage whenever they change
+  useEffect(() => {
+    const creds = {
+      provider, awsAccessKeyId, awsSecretKey, awsRegion, gcpProjectId, gcpServiceAccountKey,
+      neo4jUri, neo4jUsername, neo4jPassword, neo4jProjectId, costRegion, annualRevenue, compliances
+    };
+    localStorage.setItem('boxai_scan_creds', JSON.stringify(creds));
+  }, [provider, awsAccessKeyId, awsSecretKey, awsRegion, gcpProjectId, gcpServiceAccountKey, neo4jUri, neo4jUsername, neo4jPassword, neo4jProjectId, costRegion, annualRevenue, compliances]);
 
   const startPolling = useCallback(
     (scanId: number) => {
@@ -150,8 +213,8 @@ export default function ScanWizardPage() {
         : {};
 
       const baseBody = provider === "aws"
-        ? { provider: "aws", aws_access_key_id: awsAccessKeyId.trim(), aws_secret_key: awsSecretKey.trim(), region: awsRegion, scan_depth: scanDepth, ...neo4jCreds }
-        : { provider: "gcp", gcp_project_id: gcpProjectId.trim(), gcp_service_account_key: gcpServiceAccountKey.trim(), scan_depth: scanDepth, ...neo4jCreds };
+        ? { provider: "aws", aws_access_key_id: awsAccessKeyId.trim(), aws_secret_key: awsSecretKey.trim(), region: awsRegion, ...neo4jCreds }
+        : { provider: "gcp", gcp_project_id: gcpProjectId.trim(), gcp_service_account_key: gcpServiceAccountKey.trim(), ...neo4jCreds };
 
       const body = {
         ...baseBody,
@@ -324,11 +387,9 @@ export default function ScanWizardPage() {
                     onChange={(e) => setAwsRegion(e.target.value)}
                     className="mt-1.5 w-full rounded-xl border border-white/10 bg-black/40 px-4 py-3 text-sm text-white outline-none focus:border-[var(--accent-cyan)]/40"
                   >
-                    <option value="us-east-1">us-east-1 (N. Virginia)</option>
-                    <option value="us-west-2">us-west-2 (Oregon)</option>
-                    <option value="eu-west-1">eu-west-1 (Ireland)</option>
-                    <option value="ap-south-1">ap-south-1 (Mumbai)</option>
-                    <option value="ap-southeast-1">ap-southeast-1 (Singapore)</option>
+                    {AWS_REGIONS.map((r) => (
+                      <option key={r.value} value={r.value}>{r.label}</option>
+                    ))}
                   </select>
                 </div>
                 {/* Cost Estimation Region */}
@@ -399,28 +460,7 @@ export default function ScanWizardPage() {
             <div className="space-y-5">
               <div>
                 <p className="font-[family:var(--font-plex-mono)] text-[0.68rem] font-medium uppercase tracking-[0.24em] text-slate-400">Step 3</p>
-                <h2 className="mt-2 text-2xl font-semibold text-white">Set analysis depth</h2>
-              </div>
-              <div className="grid gap-3 sm:grid-cols-3">
-                {(["quick", "standard", "deep"] as const).map((depth) => (
-                  <button
-                    key={depth}
-                    type="button"
-                    onClick={() => setScanDepth(depth)}
-                    className={`rounded-[1.2rem] border p-4 text-left transition ${
-                      scanDepth === depth
-                        ? "border-[var(--accent-cyan)]/50 bg-[rgba(158,193,182,0.1)]"
-                        : "border-white/10 bg-white/[0.03] hover:border-white/18"
-                    }`}
-                  >
-                    <p className="text-sm font-semibold capitalize text-white">{depth}</p>
-                    <p className="mt-1 text-xs text-slate-400">
-                      {depth === "quick" && "~100 entities · Top risks only"}
-                      {depth === "standard" && "~1k entities · Full graph"}
-                      {depth === "deep" && "~15k entities · Audit-grade"}
-                    </p>
-                  </button>
-                ))}
+                <h2 className="mt-2 text-2xl font-semibold text-white">Configure Scope</h2>
               </div>
 
               {/* Annual Revenue */}
@@ -535,8 +575,8 @@ export default function ScanWizardPage() {
                   <span className="text-sm font-semibold text-white uppercase">{provider}</span>
                 </div>
                 <div className="flex items-center justify-between rounded-xl border border-white/10 bg-white/[0.03] px-4 py-3">
-                  <span className="text-sm text-slate-400">Depth</span>
-                  <span className="text-sm font-semibold capitalize text-white">{scanDepth}</span>
+                  <span className="text-sm text-slate-400">Scope</span>
+                  <span className="text-sm font-semibold text-white">Full IAM Graph</span>
                 </div>
                 <div className="flex items-center justify-between rounded-xl border border-white/10 bg-white/[0.03] px-4 py-3">
                   <span className="text-sm text-slate-400">Credentials</span>
@@ -678,7 +718,7 @@ export default function ScanWizardPage() {
                 disabled={!canProceed()}
                 className="action-box action-box-cyan px-5 py-2.5 text-sm font-semibold text-white disabled:opacity-40"
               >
-                Continue →
+                Continue
               </button>
             )}
           </div>
