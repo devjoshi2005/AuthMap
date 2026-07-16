@@ -1563,6 +1563,8 @@ class GCPIAMScanner:
         }
 
     def _parse_member(self, member: str) -> tuple:
+        if member.startswith('deleted:'):
+            member = member.replace('deleted:', '', 1)
         if ':' in member:
             return member.split(':', 1)
         return 'unknown', member
@@ -1574,7 +1576,10 @@ class GCPIAMScanner:
             'group': EntityType.GROUP,
             'domain': EntityType.ORGANIZATION,
             'allUsers': EntityType.USER,
-            'allAuthenticatedUsers': EntityType.USER
+            'allAuthenticatedUsers': EntityType.USER,
+            'projectOwner': EntityType.GROUP,
+            'projectEditor': EntityType.GROUP,
+            'projectViewer': EntityType.GROUP
         }
         return mapping.get(member_type, EntityType.USER)
 
@@ -1667,7 +1672,6 @@ class IAMScanner:
             graph = scanner.scan(selected_compliances=selected_compliances, scan_id=scan_id)
 
             if not graph.stats.get('error'):
-                graph.to_json(f"/tmp/{graph.scan_id}.json")
                 self.neo4j.import_graph(graph)
 
             return graph
@@ -1693,7 +1697,6 @@ class IAMScanner:
             graph = scanner.scan(selected_compliances=selected_compliances, scan_id=scan_id)
 
             if not graph.stats.get('error'):
-                graph.to_json(f"/tmp/{graph.scan_id}.json")
                 self.neo4j.import_graph(graph)
 
             return graph

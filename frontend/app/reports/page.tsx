@@ -16,39 +16,42 @@ type ScanData = {
 
 const REPORT_TYPES = [
   {
-    key: "compliance" as const,
-    label: "IAM Compliance Report",
-    title: "SOC 2 · RBI · DPDP Assessment",
+    key: "findings" as const,
+    label: "Basic Findings Report",
+    title: "IAM Attack Paths List",
     description:
-      "A comprehensive PDF report mapping IAM findings to SOC 2 (CC6.1, CC6.2), RBI (7.1, 7.2), and DPDP Act (Section 8) controls. Includes gap analysis, risk scores, and audit-ready evidence.",
-    accentClass: "action-box-cyan",
-    filename: "compliance_report",
-    icon: <ClipboardList className="h-6 w-6 text-white" />,
-  },
-  {
-    key: "remediation" as const,
-    label: "Attack Path Remediation",
-    title: "Prioritized Fix Roadmap",
-    description:
-      "A prioritized remediation plan with specific IAM policy changes, permission removals, MFA enforcement recommendations, and zombie resource decommissioning steps — ordered by risk score impact.",
+      "A raw, unstyled PDF listing all detected attack paths, their risk scores, and estimated breach costs. Good for quick, simple reference without the AI remediation logic.",
     accentClass: "action-box-gold",
-    filename: "remediation_report",
+    filename: "findings",
     icon: <ShieldAlert className="h-6 w-6 text-white" />,
   },
+  {
+    key: "enterprise" as const,
+    label: "Enterprise IAM Report",
+    title: "Compliance & Remediation Bundle",
+    description:
+      "A comprehensive, beautifully styled PDF containing your Executive Summary, Breach Cost Exposure, Deterministic Compliance Mappings (SOC2, PCI-DSS, etc.), and step-by-step AI-generated Terraform/CLI remediation commands.",
+    accentClass: "action-box-cyan",
+    filename: "enterprise_report",
+    icon: <ClipboardList className="h-6 w-6 text-white" />,
+  }
 ];
 
 export default function ReportsPage() {
-  const { getToken } = useAuth();
+  const { getToken, isLoaded } = useAuth();
   const [latestScan, setLatestScan] = useState<ScanData | null>(null);
   const [loading, setLoading] = useState(true);
   const [downloading, setDownloading] = useState<string | null>(null);
   const [error, setError] = useState("");
 
   useEffect(() => {
+    if (!isLoaded) return;
     async function fetchLatest() {
       try {
         const token = await getToken();
-        const res = await fetch("http://localhost:8000/scan/results/latest", {
+        if (!token) return; // Prevent 401
+        const backendUrl = process.env.NEXT_PUBLIC_BACKEND_URL || "http://localhost:8000";
+        const res = await fetch(`${backendUrl}/scan/results/latest`, {
           headers: { Authorization: `Bearer ${token}` },
         });
         if (res.ok) {
@@ -65,15 +68,16 @@ export default function ReportsPage() {
       }
     }
     fetchLatest();
-  }, [getToken]);
+  }, [getToken, isLoaded]);
 
-  async function downloadReport(fileType: "compliance" | "remediation", filename: string) {
+  async function downloadReport(fileType: string, filename: string) {
     if (!latestScan) return;
     setDownloading(fileType);
     try {
       const token = await getToken();
+      const backendUrl = process.env.NEXT_PUBLIC_BACKEND_URL || "http://localhost:8000";
       const res = await fetch(
-        `http://localhost:8000/scan/download/${latestScan.id}/${fileType}`,
+        `${backendUrl}/scan/download/${latestScan.id}/${fileType}`,
         { headers: { Authorization: `Bearer ${token}` } }
       );
       if (!res.ok) throw new Error("Download failed");
@@ -84,7 +88,7 @@ export default function ReportsPage() {
       link.click();
       URL.revokeObjectURL(link.href);
     } catch {
-      alert(`Failed to download ${fileType} report.`);
+      alert(`Failed to download report.`);
     } finally {
       setDownloading(null);
     }
@@ -95,8 +99,8 @@ export default function ReportsPage() {
       <div className="space-y-8 pb-10">
         <ScreenHeader
           eyebrow="Reports"
-          title="IAM analysis reports."
-          description="AuthMap generates compliance-mapped PDF reports and prioritized remediation roadmaps after every analysis. Download both below."
+          title="Enterprise Compliance & Remediation."
+          description="AuthMap generates a beautifully styled, compliance-mapped PDF report containing your risk exposure and AI-generated remediation roadmaps."
         />
 
         {loading && (
@@ -141,8 +145,8 @@ export default function ReportsPage() {
                       className={`action-box ${report.accentClass} px-5 py-3 text-sm font-semibold text-white disabled:opacity-50`}
                     >
                       {downloading === report.key
-                        ? "Downloading…"
-                        : `Download ${report.label} PDF`}
+                        ? "Generating Report…"
+                        : `Download Enterprise PDF`}
                     </button>
                     <span className="text-xs text-slate-500">
                       Scan ID #{latestScan.id} &middot; .pdf

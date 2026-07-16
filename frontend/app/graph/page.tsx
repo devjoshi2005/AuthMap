@@ -127,11 +127,23 @@ const cyStylesheet: cytoscape.StylesheetStyle[] = [
       "border-opacity": 1,
     },
   },
+  {
+    selector: "node.dimmed",
+    style: {
+      "opacity": 0.2,
+    },
+  },
+  {
+    selector: "edge.dimmed",
+    style: {
+      "opacity": 0.1,
+    },
+  },
 ];
 
 /* ── Component ─────────────────────────────────────────── */
 export default function GraphPage() {
-  const { getToken } = useAuth();
+  const { getToken, isLoaded } = useAuth();
 
   const cyRef = useRef<HTMLDivElement>(null);
   const cyInstanceRef = useRef<cytoscape.Core | null>(null);
@@ -148,12 +160,15 @@ export default function GraphPage() {
 
   /* ── Data fetching ─────────────────────────────────── */
   useEffect(() => {
+    if (!isLoaded) return;
     async function load() {
       try {
         const token = await getToken();
+        if (!token) return;
         const headers = { Authorization: `Bearer ${token}` };
+        const backendUrl = process.env.NEXT_PUBLIC_BACKEND_URL || "http://localhost:8000";
 
-        const scanRes = await fetch("http://localhost:8000/scan/results/latest", { headers });
+        const scanRes = await fetch(`${backendUrl}/scan/results/latest`, { headers });
         if (!scanRes.ok) {
           setNoScan(true);
           setLoading(false);
@@ -162,9 +177,22 @@ export default function GraphPage() {
         const scan = await scanRes.json();
         const scanId = scan.id ?? scan.scan_id;
 
+        const saved = sessionStorage.getItem('boxai_scan_creds');
+        let neo4jHeaders: Record<string, string> = {};
+        if (saved) {
+          try {
+            const data = JSON.parse(saved);
+            if (data.neo4jUri) neo4jHeaders['x-neo4j-uri'] = data.neo4jUri;
+            if (data.neo4jUsername) neo4jHeaders['x-neo4j-user'] = data.neo4jUsername;
+            if (data.neo4jPassword) neo4jHeaders['x-neo4j-password'] = data.neo4jPassword;
+          } catch (e) {}
+        }
+
         const [graphRes, pathsRes] = await Promise.all([
-          fetch(`http://localhost:8000/scan/graph/${scanId}`, { headers }),
-          fetch(`http://localhost:8000/scan/attack-paths/${scanId}`, { headers }),
+          fetch(`${backendUrl}/scan/graph/${scanId}`, { 
+            headers: { ...headers, ...neo4jHeaders } 
+          }),
+          fetch(`${backendUrl}/scan/attack-paths/${scanId}`, { headers }),
         ]);
 
         if (graphRes.ok) {
@@ -200,26 +228,36 @@ export default function GraphPage() {
       }
     }
     load();
-  }, [getToken]);
+  }, [getToken, isLoaded]);
 
   useEffect(() => {
     if (!graphData || !cyRef.current) return;
 
+    const labelCounts: Record<string, number> = {};
+    graphData.nodes.forEach((n) => {
+      const lbl = n.label || n.id;
+      labelCounts[lbl] = (labelCounts[lbl] || 0) + 1;
+    });
+
     const elements: cytoscape.ElementDefinition[] = [
-      ...graphData.nodes.map((n) => ({
-        data: {
-          id: n.id,
-          label: n.label,
-          type: n.type,
-          risk_score: n.risk_score ?? 20,
-          is_admin: n.is_admin ?? false,
-          is_overprivileged: n.is_overprivileged ?? false,
-          has_mfa: n.has_mfa ?? false,
-          is_dormant: n.is_dormant ?? false,
-          provider: n.provider ?? "",
-          account_id: n.account_id ?? "",
-        },
-      })),
+      ...graphData.nodes.map((n) => {
+        const baseLabel = n.label || n.id;
+        const finalLabel = labelCounts[baseLabel] > 1 ? `${baseLabel} (${n.type})` : baseLabel;
+        return {
+          data: {
+            id: n.id,
+            label: finalLabel,
+            type: n.type,
+            risk_score: n.risk_score ?? 20,
+            is_admin: n.is_admin ?? false,
+            is_overprivileged: n.is_overprivileged ?? false,
+            has_mfa: n.has_mfa ?? false,
+            is_dormant: n.is_dormant ?? false,
+            provider: n.provider ?? "",
+            account_id: n.account_id ?? "",
+          },
+        };
+      }),
       ...graphData.edges.map((e, i) => ({
         data: {
           id: `e${i}`,
@@ -257,9 +295,6 @@ export default function GraphPage() {
       wheelSensitivity: 0.2, // Essential for smooth zooming on 1000+ node graphs
     });
 
-    // Force the style engine to parse and apply all rules immediately
-    cy.style().fromJson(cyStylesheet).update();
-
     cy.on("tap", "node", (evt) => {
       const d = evt.target.data();
       setSelectedNode(d as GraphNode);
@@ -272,8 +307,11 @@ export default function GraphPage() {
 
     return () => {
       if (cy) {
-        cy.unmount();
         if (!cy.destroyed()) {
+          // Force stop all active animations and layouts before destroying
+          cy.stop(true, true);
+          cy.elements().stop(true, true);
+          cy.removeAllListeners();
           cy.destroy();
         }
       }
@@ -306,19 +344,25 @@ export default function GraphPage() {
     if (!cy || cy.destroyed()) return;
 
     cy.batch(() => {
-      cy.elements().removeClass("attack-path attack-path-node");
+      cy.elements().removeClass("attack-path attack-path-node dimmed");
 
       if (showAttackPaths && attackPaths.length > 0) {
+        cy.elements().addClass("dimmed");
         attackPaths.forEach((ap) => {
           const path = ap.path_nodes?.nodes || ap.path || [];
           for (let i = 0; i < path.length; i++) {
             const node = cy.getElementById(path[i]);
-            if (node.length) node.addClass("attack-path-node");
+            if (node.length) {
+              node.addClass("attack-path-node");
+              node.removeClass("dimmed");
+            }
             if (i < path.length - 1) {
               const edges = cy.edges(`[source="${path[i]}"][target="${path[i + 1]}"]`);
               edges.addClass("attack-path");
+              edges.removeClass("dimmed");
               const reverseEdges = cy.edges(`[source="${path[i + 1]}"][target="${path[i]}"]`);
               reverseEdges.addClass("attack-path");
+              reverseEdges.removeClass("dimmed");
             }
           }
         });
@@ -328,11 +372,11 @@ export default function GraphPage() {
 
   const handleZoomIn = useCallback(() => {
     const cy = cyInstanceRef.current;
-    if (cy) cy.zoom({ level: cy.zoom() * 1.3, renderedPosition: { x: cy.width() / 2, y: cy.height() / 2 } });
+    if (cy && !cy.destroyed()) cy.zoom({ level: cy.zoom() * 1.3, renderedPosition: { x: cy.width() / 2, y: cy.height() / 2 } });
   }, []);
   const handleZoomOut = useCallback(() => {
     const cy = cyInstanceRef.current;
-    if (cy) cy.zoom({ level: cy.zoom() / 1.3, renderedPosition: { x: cy.width() / 2, y: cy.height() / 2 } });
+    if (cy && !cy.destroyed()) cy.zoom({ level: cy.zoom() / 1.3, renderedPosition: { x: cy.width() / 2, y: cy.height() / 2 } });
   }, []);
 
   function toggleType(type: string) {
@@ -367,7 +411,7 @@ export default function GraphPage() {
           </div>
         )}
 
-        {!loading && noScan && (
+        {!loading && !graphData && (
           <section className="rounded-[2rem] border border-white/10 bg-[linear-gradient(180deg,rgba(255,255,255,0.04),rgba(255,255,255,0.02))] p-6 shadow-[0_20px_50px_rgba(0,0,0,0.18)] md:p-8">
             <div className="flex flex-col items-center justify-center gap-6 py-20">
               <div className="flex h-24 w-24 items-center justify-center rounded-full border border-[var(--accent-cyan)]/30 bg-[rgba(158,193,182,0.08)]">

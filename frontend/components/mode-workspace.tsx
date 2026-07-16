@@ -198,7 +198,8 @@ export function ModeWorkspace() {
     setApiKeyStatus("verifying");
     try {
       const token = await getToken();
-      const res = await fetch("http://localhost:8000/keys/verify", {
+      const backendUrl = process.env.NEXT_PUBLIC_BACKEND_URL || "http://localhost:8000";
+      const res = await fetch(`${backendUrl}/keys/verify`, {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
@@ -233,7 +234,8 @@ export function ModeWorkspace() {
     setIsScanning(true);
     try {
       const token = await getToken();
-      const res = await fetch("http://localhost:8000/scan/run", {
+      const backendUrl = process.env.NEXT_PUBLIC_BACKEND_URL || "http://localhost:8000";
+      const res = await fetch(`${backendUrl}/scan/run`, {
         method: "POST",
         headers: {
           "Content-Type": "application/json",

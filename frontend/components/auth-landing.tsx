@@ -56,7 +56,7 @@ export function AuthLanding({ isSignedIn = false }: AuthLandingProps) {
                   Map the invisible.
                 </h1>
                 <p className="max-w-xl text-lg leading-8 text-slate-300">
-                  See every privilege escalation path across AWS &amp; GCP before attackers do. AuthMap ingests your cloud configurations to build a live relationship graph—exposing critical vulnerabilities and mapping risky permissions to your exact cloud costs.
+                  See every privilege escalation path across AWS &amp; GCP before attackers do. AuthMap ingests your cloud configurations to build a live relationship graph—exposing critical vulnerabilities and mapping risky permissions to your exact cloud costs & compliance violations.
                 </p>
               </div>
 

@@ -60,6 +60,7 @@ const COMPLIANCE_FRAMEWORKS = [
   { value: "HIPAA", label: "HIPAA" },
   { value: "IRDAI", label: "IRDAI" },
   { value: "SEBI", label: "SEBI" },
+  { value: "IT_ACT", label: "IT Act" },
 ];
 
 type ScanStatus = {
@@ -86,6 +87,9 @@ export default function ScanWizardPage() {
   const [neo4jProjectId, setNeo4jProjectId] = useState("");
   const [isLaunching, setIsLaunching] = useState(false);
   const [launchResult, setLaunchResult] = useState<string | null>(null);
+
+  const [isVerifying, setIsVerifying] = useState(false);
+  const [verifyError, setVerifyError] = useState<string | null>(null);
 
   // New state for added fields
   const [costRegion, setCostRegion] = useState("INDIA");
@@ -116,9 +120,9 @@ export default function ScanWizardPage() {
     };
   }, []);
 
-  // Hydrate credentials from localStorage on mount
+  // Hydrate credentials from sessionStorage on mount
   useEffect(() => {
-    const saved = localStorage.getItem('boxai_scan_creds');
+    const saved = sessionStorage.getItem('boxai_scan_creds');
     if (saved) {
       try {
         const data = JSON.parse(saved);
@@ -139,13 +143,13 @@ export default function ScanWizardPage() {
     }
   }, []);
 
-  // Save credentials to localStorage whenever they change
+  // Save credentials to sessionStorage whenever they change
   useEffect(() => {
     const creds = {
       provider, awsAccessKeyId, awsSecretKey, awsRegion, gcpProjectId, gcpServiceAccountKey,
       neo4jUri, neo4jUsername, neo4jPassword, neo4jProjectId, costRegion, annualRevenue, compliances
     };
-    localStorage.setItem('boxai_scan_creds', JSON.stringify(creds));
+    sessionStorage.setItem('boxai_scan_creds', JSON.stringify(creds));
   }, [provider, awsAccessKeyId, awsSecretKey, awsRegion, gcpProjectId, gcpServiceAccountKey, neo4jUri, neo4jUsername, neo4jPassword, neo4jProjectId, costRegion, annualRevenue, compliances]);
 
   const startPolling = useCallback(
@@ -154,7 +158,8 @@ export default function ScanWizardPage() {
       const poll = async () => {
         try {
           const token = await getToken();
-          const res = await fetch(`http://localhost:8000/scan/status/${scanId}`, {
+          const backendUrl = process.env.NEXT_PUBLIC_BACKEND_URL || "http://localhost:8000";
+          const res = await fetch(`${backendUrl}/scan/status/${scanId}`, {
             headers: { Authorization: `Bearer ${token}` },
           });
           if (res.ok) {
@@ -192,7 +197,84 @@ export default function ScanWizardPage() {
     return false;
   }
 
-  function goNext() {
+  async function goNext() {
+    if (step === "credentials") {
+      if (provider === "aws" && !awsAccessKeyId.trim().startsWith("AKIA") && !awsAccessKeyId.trim().startsWith("ASIA")) {
+         setVerifyError("Invalid AWS Access Key format. Must start with AKIA or ASIA.");
+         return;
+      }
+      if (provider === "gcp") {
+         try {
+           const parsed = JSON.parse(gcpServiceAccountKey);
+           if (!parsed.private_key || !parsed.client_email) {
+             setVerifyError("Invalid GCP JSON. Must contain private_key and client_email.");
+             return;
+           }
+         } catch {
+           setVerifyError("Invalid GCP JSON format. Please paste a valid JSON object.");
+           return;
+         }
+      }
+
+      setIsVerifying(true);
+      setVerifyError(null);
+      try {
+        const token = await getToken();
+        const backendUrl = process.env.NEXT_PUBLIC_BACKEND_URL || "http://localhost:8000";
+        const body = provider === "aws" 
+          ? { provider: "aws", aws_access_key_id: awsAccessKeyId.trim(), aws_secret_key: awsSecretKey.trim(), region: awsRegion }
+          : { provider: "gcp", gcp_project_id: gcpProjectId.trim(), gcp_service_account_key: gcpServiceAccountKey.trim() };
+          
+        const res = await fetch(`${backendUrl}/scan/verify-credentials`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
+          body: JSON.stringify(body)
+        });
+        const data = await res.json();
+        if (!data.valid && data.error && !data.error.includes("Neo4j")) {
+          setVerifyError(data.error || "Connection test failed.");
+          setIsVerifying(false);
+          return;
+        }
+      } catch (e) {
+        setVerifyError("Could not reach backend to verify credentials.");
+        setIsVerifying(false);
+        return;
+      }
+      setIsVerifying(false);
+    }
+
+    if (step === "neo4j" && neo4jUri.trim()) {
+      setIsVerifying(true);
+      setVerifyError(null);
+      try {
+        const token = await getToken();
+        const backendUrl = process.env.NEXT_PUBLIC_BACKEND_URL || "http://localhost:8000";
+        const res = await fetch(`${backendUrl}/scan/verify-credentials`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
+          body: JSON.stringify({ 
+            provider: provider,
+            neo4j_uri: neo4jUri.trim(), 
+            neo4j_username: neo4jUsername.trim(), 
+            neo4j_password: neo4jPassword.trim() 
+          })
+        });
+        const data = await res.json();
+        if (!data.valid && data.error && data.error.includes("Neo4j")) {
+          setVerifyError(data.error);
+          setIsVerifying(false);
+          return;
+        }
+      } catch {
+        setVerifyError("Could not reach backend to verify Neo4j connection.");
+        setIsVerifying(false);
+        return;
+      }
+      setIsVerifying(false);
+    }
+
+    setVerifyError(null);
     const nextIndex = currentStepIndex + 1;
     if (nextIndex < steps.length) setStep(steps[nextIndex].id);
   }
@@ -216,14 +298,18 @@ export default function ScanWizardPage() {
         ? { provider: "aws", aws_access_key_id: awsAccessKeyId.trim(), aws_secret_key: awsSecretKey.trim(), region: awsRegion, ...neo4jCreds }
         : { provider: "gcp", gcp_project_id: gcpProjectId.trim(), gcp_service_account_key: gcpServiceAccountKey.trim(), ...neo4jCreds };
 
+      const accountName = user?.fullName || user?.firstName || user?.username || user?.primaryEmailAddress?.emailAddress?.split("@")[0] || "Operator";
+      
       const body = {
         ...baseBody,
         cost_region: costRegion,
         annual_revenue: annualRevenue ? parseFloat(annualRevenue) : null,
         selected_compliances: compliances,
+        account_name: accountName
       };
 
-      const res = await fetch("http://localhost:8000/scan/run", {
+      const backendUrl = process.env.NEXT_PUBLIC_BACKEND_URL || "http://localhost:8000";
+      const res = await fetch(`${backendUrl}/scan/run`, {
         method: "POST",
         headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
         body: JSON.stringify(body),
@@ -689,15 +775,41 @@ export default function ScanWizardPage() {
               )}
 
               {!scanStatus && (
-                <button
-                  type="button"
-                  onClick={handleLaunch}
-                  disabled={isLaunching}
-                  className="action-box action-box-cyan w-full px-5 py-3.5 text-sm font-semibold uppercase tracking-[0.18em] text-white disabled:opacity-50"
-                >
-                  {isLaunching ? "Launching analysis..." : "Launch IAM Analysis"}
-                </button>
+                <div className="flex gap-3">
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setScanStatus(null);
+                      setStep("provider");
+                    }}
+                    disabled={isLaunching}
+                    className="action-box action-box-ghost w-1/3 px-5 py-3.5 text-sm font-semibold uppercase tracking-[0.18em] text-slate-300 disabled:opacity-50"
+                  >
+                    Rescan
+                  </button>
+                  <button
+                    type="button"
+                    onClick={handleLaunch}
+                    disabled={isLaunching}
+                    className="action-box action-box-cyan flex w-2/3 items-center justify-center gap-2 px-5 py-3.5 text-sm font-semibold uppercase tracking-[0.18em] text-white disabled:opacity-50"
+                  >
+                    {isLaunching && (
+                      <svg className="h-4 w-4 animate-spin text-white" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
+                        <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle>
+                        <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
+                      </svg>
+                    )}
+                    {isLaunching ? "Launching..." : "Launch Analysis"}
+                  </button>
+                </div>
               )}
+            </div>
+          )}
+
+          {/* Validation Error */}
+          {verifyError && (
+            <div className="mt-4 rounded-xl bg-red-500/10 px-4 py-3 border border-red-500/20">
+              <p className="text-sm font-medium text-red-400">{verifyError}</p>
             </div>
           )}
 
@@ -715,10 +827,10 @@ export default function ScanWizardPage() {
               <button
                 type="button"
                 onClick={goNext}
-                disabled={!canProceed()}
+                disabled={!canProceed() || isVerifying}
                 className="action-box action-box-cyan px-5 py-2.5 text-sm font-semibold text-white disabled:opacity-40"
               >
-                Continue
+                {isVerifying ? "Verifying..." : "Continue"}
               </button>
             )}
           </div>

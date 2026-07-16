@@ -236,6 +236,14 @@ class ScanOrchestrator:
                 'clerk_id': clerk_id,
                 'email': f'{clerk_id}@placeholder.com'
             }).execute()
+            
+        settings_res = self.supabase.table('user_settings').select('clerk_id').eq('clerk_id', clerk_id).execute()
+        if not settings_res.data:
+            self.supabase.table('user_settings').insert({
+                'clerk_id': clerk_id,
+                'email_notifications': True,
+                'default_compliances': ["SOC2", "DPDP"]
+            }).execute()
 
     def ensure_csp_credential(self, clerk_id: str, csp_target: str, 
                               aws_access: Optional[str] = None, aws_secret: Optional[str] = None, aws_region: Optional[str] = None,
@@ -724,7 +732,9 @@ class ScanOrchestrator:
 
     def create_compliance_violations(self, scan_id: str, clerk_id: str,
                                      selected_compliances: List[str]):
-        """Detect and store compliance violations from scan_entities."""
+        """Detect and store compliance violations from scan_entities using ComplianceMapper."""
+        from remediation_engine import ComplianceMapper
+        import uuid
 
         result = self.supabase.table('scan_entities').select('*').eq('scan_id', scan_id).execute()
         entities = result.data
@@ -732,65 +742,103 @@ class ScanOrchestrator:
         violations = []
 
         for entity in entities:
-            props = entity.get('properties', {})
             risk_factors = entity.get('static_risk_factors', {})
-
-            # MFA Missing for users
-            if entity['entity_type'] == 'user' and not risk_factors.get('has_mfa', False):
-                for compliance in selected_compliances:
-                    violations.append({
-                        'id': str(uuid.uuid4()),
-                        'scan_id': scan_id,
-                        'clerk_id': clerk_id,
-                        'compliance_framework': self._map_compliance(compliance),
-                        'violation_type': 'mfa_missing',
-                        'severity': 'high',
-                        'resource_id': entity['entity_arn'],
-                        'resource_type': 'user',
-                        'expected_state': 'MFA enabled for all users',
-                        'actual_state': 'MFA not configured',
-                        'estimated_penalty': 0
-                    })
-
-            # Overprivileged check
-            if risk_factors.get('is_admin', False) and entity['entity_type'] not in ['role', 'managed_policy']:
-                for compliance in selected_compliances:
-                    violations.append({
-                        'id': str(uuid.uuid4()),
-                        'scan_id': scan_id,
-                        'clerk_id': clerk_id,
-                        'compliance_framework': self._map_compliance(compliance),
-                        'violation_type': 'overprivileged_access',
-                        'severity': 'critical',
-                        'resource_id': entity['entity_arn'],
-                        'resource_type': entity['entity_type'],
-                        'expected_state': 'Principle of least privilege',
-                        'actual_state': 'Admin-level permissions attached',
-                        'estimated_penalty': 0
-                    })
-
-            # Dormant access keys
-            if risk_factors.get('is_dormant', False) and entity['entity_type'] == 'user':
-                for compliance in selected_compliances:
-                    violations.append({
-                        'id': str(uuid.uuid4()),
-                        'scan_id': scan_id,
-                        'clerk_id': clerk_id,
-                        'compliance_framework': self._map_compliance(compliance),
-                        'violation_type': 'dormant_account',
-                        'severity': 'medium',
-                        'resource_id': entity['entity_arn'],
-                        'resource_type': 'user',
-                        'expected_state': 'Active credentials only',
-                        'actual_state': 'No activity in 90+ days',
-                        'estimated_penalty': 0
-                    })
+            
+            node = {
+                'id': entity.get('entity_arn'),
+                'name': entity.get('entity_name'),
+                'type': entity.get('entity_type'),
+                'is_dormant': risk_factors.get('is_dormant', False),
+                'has_mfa': risk_factors.get('has_mfa', False),
+                'is_overprivileged': risk_factors.get('is_overprivileged', False),
+                'is_admin': risk_factors.get('is_admin', False)
+            }
+            
+            mapped_violations = ComplianceMapper.map_node(node, selected_compliances)
+            
+            for mv in mapped_violations:
+                severity = 'high'
+                if 'admin' in mv['description'].lower() or 'overprivileged' in mv['description'].lower():
+                    severity = 'critical'
+                
+                violations.append({
+                    'id': str(uuid.uuid4()),
+                    'scan_id': scan_id,
+                    'clerk_id': clerk_id,
+                    'compliance_framework': mv['control'].split(' ')[0], # e.g. SOC2, PCI-DSS
+                    'violation_type': mv['control'],
+                    'severity': severity,
+                    'resource_id': node['id'],
+                    'resource_type': node['type'],
+                    'expected_state': mv['control'],
+                    'actual_state': mv['description'],
+                    'estimated_penalty': 0
+                })
 
         if violations:
-            CHUNK_SIZE = 500
-            for i in range(0, len(violations), CHUNK_SIZE):
-                chunk = violations[i:i + CHUNK_SIZE]
-                self.supabase.table('compliance_violations').insert(chunk).execute()
+            for i in range(0, len(violations), 500):
+                self.supabase.table('compliance_violations').insert(violations[i:i+500]).execute()
+
+    async def create_remediations(self, scan_id: str):
+        """Use AIRemediationEngine to generate remediation for top attack paths."""
+        from remediation_engine import AIRemediationEngine
+        engine = AIRemediationEngine()
+
+        # Fetch selected compliances to provide strict legal context to the AI
+        scan_record = self.supabase.table('iam_scans').select('selected_compliances, clerk_id').eq('id', scan_id).execute().data
+        selected_compliances = scan_record[0].get('selected_compliances', []) if scan_record else []
+        clerk_id = scan_record[0].get('clerk_id', 'unknown') if scan_record else 'unknown'
+
+        result = self.supabase.table('attack_paths').select('*').eq('scan_id', scan_id).order('hybrid_risk_score', desc=True).execute()
+        paths = result.data or []
+
+        for path in paths:
+            violation_context = {
+                "scan_id": scan_id,
+                "path_name": path.get('path_name'),
+                "nodes": path.get('path_nodes', {}).get('nodes', []),
+                "risk_severity": path.get('risk_severity'),
+                "applicable_compliance_frameworks": selected_compliances
+            }
+            remediation = await engine.get_remediation(violation_context)
+            
+            self.supabase.table('attack_paths').update({
+                'remediation_json': remediation
+            }).eq('id', path['id']).execute()
+            
+            # Insert into remediation_plans table
+            try:
+                plan_data = {
+                    "scan_id": scan_id,
+                    "clerk_id": clerk_id,
+                    "path_id": path['id'],
+                    "plan_name": f"Remediate {path.get('path_name', 'Attack Path')}",
+                    "plan_description": remediation.get("executive_summary", ""),
+                    "priority": path.get('risk_severity', 'medium'),
+                    "steps": [{"command": remediation.get("cli_command", "")}, {"terraform": remediation.get("terraform_snippet", "")}],
+                    "status": "draft",
+                    "can_auto_remediate": False
+                }
+                self.supabase.table('remediation_plans').insert(plan_data).execute()
+            except Exception as e:
+                logger.error(f"Failed to insert remediation plan: {e}")
+
+        violations_res = self.supabase.table('compliance_violations').select('*').eq('scan_id', scan_id).execute()
+        violations = violations_res.data or []
+        
+        for v in violations:
+            violation_context = {
+                "scan_id": scan_id,
+                "entity": v.get('entity'),
+                "control": v.get('control'),
+                "description": v.get('description'),
+                "applicable_compliance_frameworks": selected_compliances
+            }
+            remediation = await engine.get_remediation(violation_context)
+            
+            self.supabase.table('compliance_violations').update({
+                'remediation_json': remediation
+            }).eq('id', v['id']).execute()
 
     def finalize_scan(self, scan_id: str):
         """Update scan status and summary."""
@@ -906,14 +954,20 @@ class ScanOrchestrator:
             return {}
 
     def _calculate_graph_score(self, path: Dict, lof_scores: Dict[str, float]) -> float:
-        """Score based on path topology using Node2Vec/LOF and Shortest Path."""
+        """Score based on path topology using deterministic heuristics (75%) and Node2Vec/LOF anomalies (25%), with scaling complexity penalties."""
         length = path.get('path_length', 1)
         
-        # Exponential decay: shorter paths = exponentially higher risk
         base_score = 100.0 * math.exp(-0.15 * length)
         
         if 'admin' in path.get('target_name', '').lower():
-            base_score = min(100.0, base_score + 10)
+            base_score = min(100.0, base_score + 15.0)
+
+        # Complexity penalty: larger attack surface = higher inherent graph risk
+        graph_size = len(lof_scores) if lof_scores else 0
+        if graph_size > 10:
+            # Add up to 20 points for massive graphs
+            complexity_penalty = min(20.0, graph_size / 5.0)
+            base_score = min(100.0, base_score + complexity_penalty)
 
         path_nodes = path.get('path_nodes', [])
         path_lof = 0.0
@@ -921,11 +975,10 @@ class ScanOrchestrator:
             node_lofs = [lof_scores.get(n, 0.0) for n in path_nodes]
             path_lof = sum(node_lofs) / len(node_lofs)
 
-        # Non-linear combination: sigmoid function to strictly bound [0, 100]
-        raw_combined = (base_score * 0.4) + (path_lof * 0.6)
+        # Non-linear combination: give more weight to deterministic topology (75%) vs ML anomaly (25%)
+        raw_combined = (base_score * 0.75) + (path_lof * 0.25)
         
         # Sigmoid formula [0-100] : y = 100 / (1 + e^-k(x-x0))
-        # k = 0.05, x0 = 50 so it gives a smooth S-curve bound perfectly between 0 and 100
         final_score = 100.0 / (1.0 + math.exp(-0.08 * (raw_combined - 45.0)))
         
         return float(min(100.0, max(0.0, final_score)))
@@ -1042,7 +1095,9 @@ class ScanOrchestrator:
             node_max_risk = {}
             for p in paths:
                 score = p.get('hybrid_risk_score', 0)
-                for node_id in p.get('path_nodes', []):
+                path_nodes_obj = p.get('path_nodes') or {}
+                nodes_list = path_nodes_obj.get('nodes', []) if isinstance(path_nodes_obj, dict) else (path_nodes_obj if isinstance(path_nodes_obj, list) else [])
+                for node_id in nodes_list:
                     if score > node_max_risk.get(node_id, 0):
                         node_max_risk[node_id] = score
                         

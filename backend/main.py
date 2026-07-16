@@ -4,8 +4,8 @@ import io
 import csv
 import json
 import logging
-from typing import Optional, List
-from datetime import datetime, timezone
+import hashlib
+from typing import Optional, List, Dict, Any
 
 from fastapi import FastAPI, HTTPException, Depends, BackgroundTasks, Request
 from fastapi.middleware.cors import CORSMiddleware
@@ -23,6 +23,7 @@ from collectors.breach_cost_estimator import Region
 
 load_dotenv()
 logger = logging.getLogger(__name__)
+logging.getLogger("fontTools.subset").setLevel(logging.WARNING)
 
 
 _cached_jwks: Optional[dict] = None
@@ -108,7 +109,19 @@ class ScanRequest(BaseModel):
     neo4j_username: Optional[str] = None
     neo4j_password: Optional[str] = None
     neo4j_project_id: Optional[str] = None
+    account_name: Optional[str] = "Operator"
 
+
+class ScanRequestVerify(BaseModel):
+    provider: str
+    aws_access_key_id: Optional[str] = None
+    aws_secret_key: Optional[str] = None
+    region: Optional[str] = 'us-east-1'
+    gcp_project_id: Optional[str] = None
+    gcp_service_account_key: Optional[str] = None
+    neo4j_uri: Optional[str] = None
+    neo4j_username: Optional[str] = None
+    neo4j_password: Optional[str] = None
 
 
 app = FastAPI(
@@ -117,9 +130,14 @@ app = FastAPI(
     version="0.1.0",
 )
 
+frontend_url = os.getenv("FRONTEND_URL")
+origins = ["http://localhost:3000", "http://localhost:3001"]
+if frontend_url:
+    origins.append(frontend_url)
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:3000", "http://localhost:3001"],
+    allow_origins=origins,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -127,6 +145,12 @@ app.add_middleware(
 
 
 scan_status: dict[str, dict] = {}
+
+
+def hash_clerk_id(clerk_id: str) -> str:
+    if not clerk_id:
+        return ""
+    return hashlib.sha256(clerk_id.encode()).hexdigest()
 
 
 def get_orchestrator(neo4j_uri=None, neo4j_user=None, neo4j_password=None) -> ScanOrchestrator:
@@ -186,11 +210,15 @@ async def run_scan_pipeline(scan_id: str, clerk_id: str, req: ScanRequest):
         )
 
         # Phase 4 — Compliance
-        scan_status[scan_id].update(phase="compliance", progress=80)
+        scan_status[scan_id].update(phase="compliance", progress=75)
         orchestrator.create_compliance_violations(scan_id, clerk_id, req.selected_compliances)
 
-        # Phase 5 — Finalize
-        scan_status[scan_id].update(phase="reporting", progress=90)
+        # Phase 5 — AI Remediation
+        scan_status[scan_id].update(phase="remediation", progress=85)
+        await orchestrator.create_remediations(scan_id)
+
+        # Phase 6 — Finalize
+        scan_status[scan_id].update(phase="reporting", progress=95)
         orchestrator.finalize_scan(scan_id)
 
         scan_status[scan_id].update(status="completed", phase="done", progress=100)
@@ -205,6 +233,54 @@ async def run_scan_pipeline(scan_id: str, clerk_id: str, req: ScanRequest):
             "error": str(exc),
         }
 
+
+@app.post("/scan/verify-credentials")
+async def verify_credentials(
+    req: ScanRequestVerify,
+    clerk_id: str = Depends(get_clerk_user_id),
+):
+    """Verify CSP and Neo4j credentials actively."""
+    # 1. Verify Neo4j if provided
+    if req.neo4j_uri:
+        orchestrator = get_orchestrator(
+            neo4j_uri=req.neo4j_uri,
+            neo4j_user=req.neo4j_username,
+            neo4j_password=req.neo4j_password,
+        )
+        try:
+            orchestrator.verify_neo4j_connection()
+        except Exception as e:
+            return {"valid": False, "error": f"Neo4j Connection Failed: {str(e)}"}
+            
+    # 2. Verify CSP
+    if req.provider == 'aws':
+        if not req.aws_access_key_id or not req.aws_secret_key:
+            return {"valid": False, "error": "Missing AWS credentials."}
+        try:
+            import boto3
+            client = boto3.client(
+                'sts',
+                aws_access_key_id=req.aws_access_key_id,
+                aws_secret_access_key=req.aws_secret_key,
+                region_name=req.region
+            )
+            client.get_caller_identity()
+        except Exception as e:
+            return {"valid": False, "error": f"AWS Authentication Failed: {str(e)}"}
+            
+    elif req.provider == 'gcp':
+        if not req.gcp_service_account_key:
+            return {"valid": False, "error": "Missing GCP Service Account JSON."}
+        try:
+            import json
+            from google.oauth2 import service_account
+            
+            creds_info = json.loads(req.gcp_service_account_key)
+            service_account.Credentials.from_service_account_info(creds_info)
+        except Exception as e:
+            return {"valid": False, "error": f"GCP Authentication Failed: {str(e)}"}
+            
+    return {"valid": True, "error": None}
 
 
 @app.post("/scan/run")
@@ -239,7 +315,7 @@ async def start_scan(
     scan_id = orchestrator.create_scan_record(
         clerk_id=clerk_id,
         credential_id=cred_id,
-        scan_name=f"{req.provider.upper()} Scan",
+        scan_name=f"{req.provider.upper()} Scan - {req.account_name}",
         scan_type=req.scan_type,
         csp_target=req.provider,
         selected_compliances=req.selected_compliances,
@@ -290,7 +366,11 @@ async def get_latest_scan(clerk_id: str = Depends(get_clerk_user_id)):
     )
     if not result.data:
         raise HTTPException(status_code=404, detail="No scans found for this user")
-    return result.data[0]
+    
+    scan = result.data[0]
+    if "clerk_id" in scan:
+        scan["clerk_id"] = hash_clerk_id(scan["clerk_id"])
+    return scan
 
 
 @app.get("/scan/results/{scan_id}")
@@ -303,16 +383,29 @@ async def get_scan_results(
     result = orchestrator.supabase.table("iam_scans").select("*").eq("id", scan_id).execute()
     if not result.data:
         raise HTTPException(status_code=404, detail="Scan not found")
-    return result.data[0]
+        
+    scan = result.data[0]
+    if "clerk_id" in scan:
+        scan["clerk_id"] = hash_clerk_id(scan["clerk_id"])
+    return scan
 
 
 @app.get("/scan/graph/{scan_id}")
 async def get_scan_graph(
     scan_id: str,
+    request: Request,
     clerk_id: str = Depends(get_clerk_user_id),
 ):
-    """Return Cytoscape.js-formatted graph elements."""
-    orchestrator = get_orchestrator()
+    """Return Cytoscape.js-formatted graph elements directly from Neo4j."""
+    neo4j_uri = request.headers.get("x-neo4j-uri")
+    neo4j_user = request.headers.get("x-neo4j-user")
+    neo4j_password = request.headers.get("x-neo4j-password")
+    
+    orchestrator = get_orchestrator(
+        neo4j_uri=neo4j_uri,
+        neo4j_user=neo4j_user,
+        neo4j_password=neo4j_password
+    )
     return orchestrator.get_graph_for_cytoscape(scan_id)
 
 
@@ -474,14 +567,23 @@ async def download_scan_data(
 ):
     import glob as _glob
 
-    if file_type not in ("json", "csv", "findings"):
-        raise HTTPException(status_code=400, detail="file_type must be 'json', 'csv', or 'findings'")
+    if file_type not in ("json", "csv", "findings", "enterprise"):
+        raise HTTPException(status_code=400, detail="file_type must be 'json', 'csv', 'findings', or 'enterprise'")
 
     if file_type == "findings":
         from fpdf import FPDF
         import tempfile
+        import textwrap
         
         orchestrator = get_orchestrator()
+        scan_res = orchestrator.supabase.table("iam_scans").select("*").eq("id", scan_id).execute()
+        scan_name = scan_res.data[0].get("scan_name", "Unknown Account") if scan_res.data else "Unknown Account"
+        
+        if " - " in scan_name:
+            account_name = scan_name.split(" - ")[-1]
+        else:
+            account_name = scan_name
+
         paths_res = orchestrator.supabase.table("attack_paths").select("*").eq("scan_id", scan_id).execute()
         paths = paths_res.data or []
         
@@ -491,7 +593,7 @@ async def download_scan_data(
         pdf.add_font("DejaVu", "B", "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf")
         
         pdf.set_font("DejaVu", "B", 16)
-        pdf.cell(0, 10, f"IAM Security Findings - Scan {scan_id}", new_x="LMARGIN", new_y="NEXT", align="C")
+        pdf.cell(0, 10, f"IAM Security Analysis - SCAN {account_name}", new_x="LMARGIN", new_y="NEXT", align="C")
         pdf.ln(10)
         
         if not paths:
@@ -501,7 +603,6 @@ async def download_scan_data(
             pdf.set_font("DejaVu", "B", 14)
             pdf.cell(0, 10, f"Total Attack Paths: {len(paths)}", new_x="LMARGIN", new_y="NEXT")
             pdf.ln(5)
-            import textwrap
             
             for i, p in enumerate(paths, 1):
                 pdf.set_font("DejaVu", "B", 12)
@@ -521,15 +622,6 @@ async def download_scan_data(
                 safe_cost = textwrap.fill(f"Est. Breach Cost: ${p.get('estimated_cost_impact', 0):,.2f}", width=60, break_long_words=True)
                 pdf.set_x(10)
                 pdf.multi_cell(190, 7, safe_cost)
-                
-                if p.get('cost_breakdown') and 'regulatory_fines' in p['cost_breakdown']:
-                    fines = p['cost_breakdown']['regulatory_fines']
-                    if fines:
-                        fines_str = f"Regulatory Fines: {', '.join([f'{k}: ${v:,.2f}' for k, v in fines.items()])}"
-                        safe_fines = textwrap.fill(fines_str, width=60, break_long_words=True)
-                        pdf.set_x(10)
-                        pdf.multi_cell(190, 7, safe_fines)
-                
                 pdf.ln(5)
                 
         tmp_pdf = tempfile.NamedTemporaryFile(delete=False, suffix=".pdf")
@@ -539,6 +631,83 @@ async def download_scan_data(
             tmp_pdf.name,
             media_type="application/pdf",
             filename=f"authmap_findings_{scan_id}.pdf"
+        )
+
+    if file_type == "enterprise":
+        from remediation_engine import EnterpriseReportGenerator
+        
+        orchestrator = get_orchestrator()
+        
+        # Gather report data
+        scan_record = orchestrator.supabase.table("iam_scans").select("*").eq("id", scan_id).execute().data
+        scan = scan_record[0] if scan_record else {}
+        
+        paths_res = orchestrator.supabase.table("attack_paths").select("*").eq("scan_id", scan_id).execute()
+        paths = paths_res.data or []
+        
+        violations_res = orchestrator.supabase.table("compliance_violations").select("*").eq("scan_id", scan_id).execute()
+        violations = violations_res.data or []
+        
+        stats = {
+            "total_nodes": scan.get("total_entities", 0),
+            "total_paths": len(paths),
+            "max_risk": max([p.get('hybrid_risk_score', 0) for p in paths] + [0]),
+            "breach_cost": sum([p.get('estimated_cost_impact', 0) for p in paths])
+        }
+        
+        formatted_paths = []
+        for p in paths:
+            nodes = p.get('path_nodes', {})
+            node_list = nodes.get('nodes', []) if isinstance(nodes, dict) else (nodes if isinstance(nodes, list) else [])
+            
+            formatted_paths.append({
+                "name": p.get('path_name', 'Unknown Path'),
+                "risk_score": p.get('hybrid_risk_score', 0),
+                "cost": p.get('estimated_cost_impact', 0),
+                "nodes": node_list,
+                "remediation": p.get('remediation_json')
+            })
+            
+        report_data = {
+            "date": scan.get("created_at", ""),
+            "frameworks": scan.get("selected_compliances", []),
+            "stats": stats,
+            "compliance_violations": violations,
+            "attack_paths": formatted_paths
+        }
+        
+        generator = EnterpriseReportGenerator()
+        pdf_path = generator.generate_pdf(scan_id, report_data)
+        
+        # Insert into scan_reports table
+        try:
+            clerk_id = scan.get("clerk_id", "unknown")
+            file_size = os.path.getsize(pdf_path) if os.path.exists(pdf_path) else 0
+            
+            # Create a simple JSON serializable summary
+            safe_stats = {
+                "total_nodes": int(stats.get("total_nodes", 0)),
+                "total_paths": int(stats.get("total_paths", 0)),
+                "max_risk": float(stats.get("max_risk", 0)),
+                "breach_cost": float(stats.get("breach_cost", 0))
+            }
+            
+            orchestrator.supabase.table("scan_reports").insert({
+                "scan_id": scan_id,
+                "clerk_id": clerk_id,
+                "report_type": "executive_summary",
+                "report_format": "pdf",
+                "storage_path": pdf_path,
+                "file_size_bytes": file_size,
+                "summary": safe_stats
+            }).execute()
+        except Exception as e:
+            logger.error(f"Failed to insert scan_reports record: {e}")
+        
+        return FileResponse(
+            pdf_path,
+            media_type="application/pdf",
+            filename=f"authmap_enterprise_report_{scan_id}.pdf"
         )
 
     graph_data = orchestrator.get_graph_for_cytoscape(scan_id)

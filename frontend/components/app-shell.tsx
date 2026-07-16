@@ -58,7 +58,7 @@ export function AppShell({ children }: AppShellProps) {
               Security console
             </p>
             <p className="mt-2 max-w-[36rem] text-[1.8rem] font-semibold leading-[0.96] tracking-[-0.04em] text-white sm:text-[2.2rem] lg:text-[2.6rem]">
-              IAM attack path analyzer for AWS & GCP.
+              IAM attack path & Cost Compliance Analyzer for AWS & GCP.
             </p>
           </div>
           <div className="mx-auto flex w-full max-w-[28rem] flex-col items-center space-y-4 xl:mx-0 xl:items-end">

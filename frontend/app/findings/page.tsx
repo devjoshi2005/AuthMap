@@ -100,7 +100,7 @@ function formatCurrency(n: number): string {
 
 /* ── Component ─────────────────────────────────────────── */
 export default function FindingsPage() {
-  const { getToken } = useAuth();
+  const { getToken, isLoaded } = useAuth();
   const [latestScan, setLatestScan] = useState<ScanData | null>(null);
   const [loading, setLoading] = useState(true);
   const [downloading, setDownloading] = useState(false);
@@ -108,12 +108,16 @@ export default function FindingsPage() {
   const [findings, setFindings] = useState<FindingsData | null>(null);
 
   useEffect(() => {
+    if (!isLoaded) return;
+    
     async function fetchLatest() {
       try {
         const token = await getToken();
+        if (!token) return; // Prevent 401
         const headers = { Authorization: `Bearer ${token}` };
+        const backendUrl = process.env.NEXT_PUBLIC_BACKEND_URL || "http://localhost:8000";
 
-        const res = await fetch("http://localhost:8000/scan/results/latest", { headers });
+        const res = await fetch(`${backendUrl}/scan/results/latest`, { headers });
         if (res.ok) {
           const scan = await res.json();
           setLatestScan(scan);
@@ -122,7 +126,7 @@ export default function FindingsPage() {
 
           // Fetch findings data
           try {
-            const findingsRes = await fetch(`http://localhost:8000/scan/findings/${scanId}`, { headers });
+            const findingsRes = await fetch(`${backendUrl}/scan/findings/${scanId}`, { headers });
             if (findingsRes.ok) {
               setFindings(await findingsRes.json());
             }
@@ -141,15 +145,16 @@ export default function FindingsPage() {
       }
     }
     fetchLatest();
-  }, [getToken]);
+  }, [getToken, isLoaded]);
 
   async function downloadFindings() {
     if (!latestScan) return;
     setDownloading(true);
     try {
       const token = await getToken();
+      const backendUrl = process.env.NEXT_PUBLIC_BACKEND_URL || "http://localhost:8000";
       const res = await fetch(
-        `http://localhost:8000/scan/download/${latestScan.id}/findings`,
+        `${backendUrl}/scan/download/${latestScan.id}/findings`,
         { headers: { Authorization: `Bearer ${token}` } }
       );
       if (!res.ok) throw new Error("Download failed");

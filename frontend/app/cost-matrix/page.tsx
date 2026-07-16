@@ -60,18 +60,21 @@ function classifyQuadrant(riskScore: number, cost: number, riskThreshold: number
 
 /* ── Component ─────────────────────────────────────────── */
 export default function CostMatrixPage() {
-  const { getToken } = useAuth();
+  const { getToken, isLoaded } = useAuth();
   const [loading, setLoading] = useState(true);
   const [noScan, setNoScan] = useState(false);
   const [costData, setCostData] = useState<CostAnalysis | null>(null);
 
   useEffect(() => {
+    if (!isLoaded) return;
     async function load() {
       try {
         const token = await getToken();
+        if (!token) return; // Prevent 401
         const headers = { Authorization: `Bearer ${token}` };
+        const backendUrl = process.env.NEXT_PUBLIC_BACKEND_URL || "http://localhost:8000";
 
-        const scanRes = await fetch("http://localhost:8000/scan/results/latest", { headers });
+        const scanRes = await fetch(`${backendUrl}/scan/results/latest`, { headers });
         if (!scanRes.ok) {
           setNoScan(true);
           setLoading(false);
@@ -80,7 +83,7 @@ export default function CostMatrixPage() {
         const scan = await scanRes.json();
         const scanId = scan.id ?? scan.scan_id;
 
-        const costRes = await fetch(`http://localhost:8000/scan/cost-analysis/${scanId}`, { headers });
+        const costRes = await fetch(`${backendUrl}/scan/cost-analysis/${scanId}`, { headers });
         if (costRes.ok) {
           setCostData(await costRes.json());
         } else {
@@ -93,7 +96,7 @@ export default function CostMatrixPage() {
       }
     }
     load();
-  }, [getToken]);
+  }, [getToken, isLoaded]);
 
   /* ── Quadrant classification ───────────────────────── */
   const riskThreshold = costData?.paths?.length ? Math.max(50, ...costData.paths.map((p) => p.risk_score)) * 0.5 : 50;
@@ -199,7 +202,7 @@ export default function CostMatrixPage() {
                   </div>
                   <p className="text-xs text-slate-400 mb-3 font-medium">(30% Weight)</p>
                   <p className="text-sm leading-relaxed text-slate-300">
-                    Measures topological blast radius. Accounts for proximity to highly privileged entities, chain length to admin roles, and overprivileged trusts.
+                    Measures topological blast radius. Analyzes path lengths to admin roles and adds dynamic Complexity Penalties for massive attack surfaces. Weights deterministic topology logic (75%) over ML anomaly detection (25%).
                   </p>
                 </div>
                 <div className="rounded-xl border border-white/10 bg-[#0a0d12]/50 p-5">

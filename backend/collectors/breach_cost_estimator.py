@@ -23,6 +23,7 @@ class ComplianceFramework(Enum):
     HIPAA = "hipaa"
     IRDAI = "irdai"
     SEBI = "sebi"
+    IT_ACT = "it_act"
 
 class DataSensitivity(Enum):
     PUBLIC = 1.0
