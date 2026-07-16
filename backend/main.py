@@ -143,7 +143,7 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-
+#health check
 @app.get("/")
 @app.head("/")
 async def health_check():
