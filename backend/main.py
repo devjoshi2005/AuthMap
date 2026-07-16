@@ -144,6 +144,13 @@ app.add_middleware(
 )
 
 
+@app.get("/")
+@app.head("/")
+async def health_check():
+    """Health check endpoint for Render/hosting platforms."""
+    return {"status": "ok", "service": "AuthMap API"}
+
+
 scan_status: dict[str, dict] = {}
 
 
