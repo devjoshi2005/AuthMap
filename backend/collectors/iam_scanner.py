@@ -898,6 +898,9 @@ class AWSIAMScanner:
                 created_at=str(group.get('CreateDate', ''))
             ))
 
+            account_arn = f"arn:aws:iam::{self.account_id}:root"
+            self._add_edge(IAMEdge(source=group_arn, target=account_arn, type="BELONGS_TO"))
+
             for policy in attached:
                 self._add_edge(IAMEdge(
                     source=policy['PolicyArn'], target=group_arn,
@@ -968,6 +971,9 @@ class AWSIAMScanner:
                 created_at=str(role.get('CreateDate', '')),
                 last_used_at=str(role.get('RoleLastUsed', {}).get('LastUsedDate', ''))
             ))
+
+            account_arn = f"arn:aws:iam::{self.account_id}:root"
+            self._add_edge(IAMEdge(source=role_arn, target=account_arn, type="BELONGS_TO"))
 
             # Role -> Trust edges
             for principal in trusted:

@@ -11,7 +11,10 @@ from node2vec import Node2Vec
 from database import PostgresClient
 from neo4j import GraphDatabase
 from iam_scanner import IAMScanner, EntityType, PermissionClassifier
+import logging
 from breach_cost_estimator import BreachCostEstimator, ServiceType, Region, ComplianceFramework, DataSensitivity
+
+logger = logging.getLogger(__name__)
 
 
 class TemporalAnalyzer:
@@ -416,7 +419,7 @@ class ScanOrchestrator:
             chunk = entities_to_insert[i:i + CHUNK_SIZE]
             self.supabase.table('scan_entities').insert(chunk).execute()
 
-        print(f"Stored {len(entities_to_insert)} entities in {math.ceil(len(entities_to_insert)/CHUNK_SIZE)} batches")
+        logger.info(f"Stored {len(entities_to_insert)} entities in {math.ceil(len(entities_to_insert)/CHUNK_SIZE)} batches")
 
     def _store_temporal_events_aws(self, scan_id: str, clerk_id: str, graph):
         """Store AWS CloudTrail events in temporal_events table."""
@@ -522,10 +525,10 @@ class ScanOrchestrator:
                 }
                 events_to_insert.append(event)
 
-            print(f"GCP Audit Logs: Collected {len(events_to_insert)} IAM events")
+            logger.info(f"GCP Audit Logs: Collected {len(events_to_insert)} IAM events")
 
         except Exception as e:
-            print(f"Warning: Could not fetch GCP Audit Logs: {e}")
+            logger.info(f"Warning: Could not fetch GCP Audit Logs: {e}")
 
         for node in graph.nodes:
             if node['type'] != 'Event' or node.get('provider') != 'gcp':
@@ -914,7 +917,7 @@ class ScanOrchestrator:
     def _precompute_graph_lof(self, paths: List[Dict]) -> Dict[str, float]:
         
         if Node2Vec is None:
-            print("Warning: node2vec not installed. Skipping graph LOF.")
+            logger.info("Warning: node2vec not installed. Skipping graph LOF.")
             return {}
 
         try:
@@ -950,7 +953,7 @@ class ScanOrchestrator:
 
             return lof_scores
         except Exception as e:
-            print(f"Graph LOF calculation failed: {e}")
+            logger.info(f"Graph LOF calculation failed: {e}")
             return {}
 
     def _calculate_graph_score(self, path: Dict, lof_scores: Dict[str, float]) -> float:
@@ -1007,7 +1010,7 @@ class ScanOrchestrator:
             return risk_score
 
         except Exception as e:
-            print(f"Warning: Temporal analysis failed: {e}")
+            logger.info(f"Warning: Temporal analysis failed: {e}")
             return 0.0
 
     def _detect_services_from_path(self, path_entities: List[Dict]) -> List[str]:

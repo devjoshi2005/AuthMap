@@ -27,6 +27,7 @@ export type ScanMode = {
 
 export const navigationItems = [
   { href: "/", label: "Dashboard" },
+  { href: "/guide", label: "Guide" },
   { href: "/scan-wizard", label: "Scan Wizard" },
   { href: "/graph", label: "Graph" },
   { href: "/findings", label: "Findings" },

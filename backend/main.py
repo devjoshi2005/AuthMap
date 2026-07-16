@@ -22,6 +22,7 @@ from collectors.breach_cost_estimator import Region
 
 
 load_dotenv()
+logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
 logging.getLogger("fontTools.subset").setLevel(logging.WARNING)
 

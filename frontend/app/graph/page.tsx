@@ -4,6 +4,12 @@ import { useAuth } from "@clerk/nextjs";
 import { useState, useEffect, useRef, useCallback } from "react";
 import Link from "next/link";
 import cytoscape from "cytoscape";
+// @ts-ignore
+import fcose from "cytoscape-fcose";
+
+if (typeof window !== "undefined" && !cytoscape.use.name.includes("fcose")) {
+  cytoscape.use(fcose);
+}
 import { AppShell } from "@/components/app-shell";
 import { ScreenHeader } from "@/components/screen-header";
 import { Network } from "lucide-react";
@@ -280,16 +286,16 @@ export default function GraphPage() {
       elements,
       style: cyStylesheet,
       layout: {
-        name: "cose",
-        animate: true,
-        animationDuration: 800,
-        nodeRepulsion: () => 400000,
-        idealEdgeLength: () => 250,
-        edgeElasticity: () => 50,
-        gravity: 0.15,
+        name: "fcose",
+        animate: false,
+        randomize: true,
+        nodeRepulsion: 400000,
+        idealEdgeLength: 250,
+        edgeElasticity: 0.5,
+        gravity: 0.25,
         numIter: 1000,
         padding: 50,
-      } as cytoscape.CoseLayoutOptions,
+      } as any,
       minZoom: 0.15,
       maxZoom: 3,
       wheelSensitivity: 0.2, // Essential for smooth zooming on 1000+ node graphs
