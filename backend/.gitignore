@@ -1,3 +1,5 @@
 collectors/.aws
 collectors/.gcp
 .env
+.env.local 
+*.env
