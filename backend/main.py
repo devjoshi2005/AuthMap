@@ -3,7 +3,7 @@ import sys
 import io
 import csv
 import json
-import logging
+import logging,traceback
 import hashlib
 from typing import Optional, List, Dict, Any
 
@@ -130,6 +130,15 @@ app = FastAPI(
     description="IAM security scanner, graph-based attack-path analysis & breach-cost estimation.",
     version="0.1.0",
 )
+
+@app.exception_handler(500)
+async def global_exception_handler(request: Request, exc: Exception):
+    logger.error(f"Unhandled exception: {exc}\n{traceback.format_exc()}")
+    return JSONResponse(
+        status_code=500,
+        content={"detail": "Internal Server Error"},
+    )
+
 
 frontend_url = os.getenv("FRONTEND_URL")
 origins = ["http://localhost:3000", "http://localhost:3001"]
