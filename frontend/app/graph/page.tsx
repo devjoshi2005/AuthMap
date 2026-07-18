@@ -289,7 +289,7 @@ export default function GraphPage() {
         name: "fcose",
         animate: false,
         randomize: true,
-        quality: "draft",
+        quality: "default",
         nodeRepulsion: 400000,
         idealEdgeLength: 250,
         edgeElasticity: 0.5,
