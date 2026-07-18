@@ -1,7 +1,5 @@
 #!/bin/bash
 
-# AuthMap Backend - GCP Cloud Run Deployment Script
-# This script deploys the backend to Cloud Run using the existing Dockerfile.
 
 PROJECT_ID=$(gcloud config get-value project)
 if [ -z "$PROJECT_ID" ]; then
@@ -9,9 +7,9 @@ if [ -z "$PROJECT_ID" ]; then
     exit 1
 fi
 
-echo "Deploying AuthMap Backend to Google Cloud Run..."
-echo "Project: $PROJECT_ID"
-echo "Region: us-central1 (Tier 1 Free Tier Eligible, Lowest Latency)"
+
+if [ -f .env ]; then
+    export $(cat .env | xargs)
 
 # Deploy from source using the local Dockerfile
 # We allocate 2Gi of RAM to prevent OOM errors with scikit-learn and node2vec
@@ -22,12 +20,8 @@ gcloud run deploy authmap-backend \
   --allow-unauthenticated \
   --memory 2Gi \
   --cpu 1 \
-  --set-env-vars="FRONTEND_URL=https://authmap.vercel.app" \
+  --set-env-vars="FRONTEND_URL=$FRONTEND_URL,CLERK_JWT_ISSUER=$CLERK_JWT_ISSUER,CLERK_SECRET_KEY=$CLERK_SECRET_KEY,POSTGRES_URI=$POSTGRES_URI,GROQ_API_KEY=$GROQ_API_KEY,FONT_DEJAVU_BOLD=$FONT_DEJAVU_BOLD,FONT_DEJAVU_REGULAR=$FONT_DEJAVU_REGULAR" \
   --min-instances 0 \
   --max-instances 2 \
   --port 8080
 
-echo "========================================="
-echo "✅ Deployment complete!"
-echo "Please copy the Service URL provided above."
-echo "========================================="
