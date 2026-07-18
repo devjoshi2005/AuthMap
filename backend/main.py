@@ -138,7 +138,7 @@ async def global_exception_handler(request: Request, exc: Exception):
         status_code=500,
         content={"detail": "Internal Server Error"},
     )
-
+ 
 
 frontend_url = os.getenv("FRONTEND_URL")
 origins = ["http://localhost:3000", "http://localhost:3001"]
