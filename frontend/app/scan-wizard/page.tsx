@@ -76,6 +76,8 @@ export default function ScanWizardPage() {
   const { user } = useUser();
   const [step, setStep] = useState<WizardStep>("provider");
   const [provider, setProvider] = useState<CloudProvider>("aws");
+
+  
   const [awsAccessKeyId, setAwsAccessKeyId] = useState("");
   const [awsSecretKey, setAwsSecretKey] = useState("");
   const [awsRegion, setAwsRegion] = useState("us-east-1");

@@ -294,7 +294,7 @@ export default function GraphPage() {
         idealEdgeLength: 250,
         edgeElasticity: 0.5,
         gravity: 0.25,
-        numIter: 750,
+        numIter: 500,
         padding: 50,
       } as any,
       minZoom: 0.15,
