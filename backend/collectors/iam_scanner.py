@@ -257,7 +257,7 @@ class PermissionClassifier:
 
         for action in permissions:
             risk_level, score = cls.classify_permission(action)
-            max_risk = max(max_risk, score)
+            max_risk = max(max_risk,score)
             if risk_level == 'admin':
                 is_admin = True
             if risk_level in ('high', 'admin'):
