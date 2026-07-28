@@ -223,7 +223,7 @@ flowchart TD
 |-----------|-------------|
 | **IAMGraphBuilder** | Creates Neo4j nodes (Principal, Role, Group, Policy, Resource, Regulation) and edges |
 | **PEGraphWriter** | Evaluates 16 PE methods, writes `CAN_ESCALATE_TO` edges with method + severity |
-| **AttackPathFinder** | Cypher queries for CRITICAL path extraction, blast radius calculation then checks semantically for (admin,overpirivilege & dormant credentials) |
+| **AttackPathFinder** | Cypher queries for CRITICAL path extraction, blast radius calculation then checks semantically for (admin,overpirivilege & dormant IAM credentials) |
 
 ### Intelligence Layer
 
@@ -245,10 +245,10 @@ flowchart TD
 | Breach cost with Indian penalty schedules | Yes | No | No | No |
 | Neo4j graph visualization | Yes | Proprietary | No | No |
 | Non-linear SGTC hybrid scoring | Yes | Proprietary | No | No |
-| Node2Vec + LOF graph anomaly detection | ✅ | ❌ | ❌ | ❌ |
-| CloudTrail temporal behavioral analysis | ✅ | Partial | ❌ | ❌ |
-| Multi-cloud (AWS + GCP) | ✅ | ✅ | Partial | ❌ |
-| Open source | ✅ | ❌ | ❌ | ❌ |
+| Node2Vec + LOF graph anomaly detection | Yes | Proprietary | No | No |
+| CloudTrail temporal behavioral analysis | Yes | Partial | No | No |
+| Multi-cloud (AWS + GCP) | Yes | Yes | Partial | No |
+| Open source | Yes | No | No | No |
 | Price point | ₹15K–22K/audit | $1M+/year | $1K–3K/month | $100K+/year |
 
 ---
