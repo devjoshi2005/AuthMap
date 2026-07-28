@@ -49,6 +49,7 @@ async def _get_clerk_jwks() -> dict:
     return _cached_jwks
 
 
+
 async def get_clerk_user_id(request: Request) -> str:
     """FastAPI dependency — validate Clerk JWT and return the user's clerk_id (sub)."""
     auth_header = request.headers.get("Authorization")
@@ -97,15 +98,20 @@ async def get_clerk_user_id(request: Request) -> str:
 
 class ScanRequest(BaseModel):
     provider: str  
-    aws_access_key_id: Optional[str] = None
-    aws_secret_key: Optional[str] = None
-    region: Optional[str] = 'us-east-1'
+    # AWS Cross-Account Role
+    aws_role_arn: Optional[str] = None
+    aws_external_id: Optional[str] = None
+    # GCP: Service Account JSON
+    gcp_sa_json: Optional[str] = None
     gcp_project_id: Optional[str] = None
-    gcp_service_account_key: Optional[str] = None
+    
+    region: Optional[str] = 'us-east-1'
     scan_type: Optional[str] = 'full'
     selected_compliances: Optional[List[str]] = ['SOC2', 'DPDP']
     cost_region: Optional[str] = 'INDIA'  
     annual_revenue: Optional[float] = None
+    
+    # These are now ignored/overwritten by the backend Aura automation, kept for backwards compatibility
     neo4j_uri: Optional[str] = None
     neo4j_username: Optional[str] = None
     neo4j_password: Optional[str] = None
@@ -115,11 +121,11 @@ class ScanRequest(BaseModel):
 
 class ScanRequestVerify(BaseModel):
     provider: str
-    aws_access_key_id: Optional[str] = None
-    aws_secret_key: Optional[str] = None
-    region: Optional[str] = 'us-east-1'
+    aws_role_arn: Optional[str] = None
+    aws_external_id: Optional[str] = None
+    gcp_sa_json: Optional[str] = None
     gcp_project_id: Optional[str] = None
-    gcp_service_account_key: Optional[str] = None
+    region: Optional[str] = 'us-east-1'
     neo4j_uri: Optional[str] = None
     neo4j_username: Optional[str] = None
     neo4j_password: Optional[str] = None
@@ -159,6 +165,61 @@ app.add_middleware(
 async def health_check():
     """Health check endpoint for Render/hosting platforms."""
     return {"status": "ok", "service": "AuthMap API"}
+
+
+@app.get("/aws/cloudformation")
+def get_aws_cloudformation(external_id: str, account_id: str):
+    """Returns a CloudFormation template to create the cross-account IAM role."""
+    policy_str = os.getenv("AWS_SCANNER_IAM_POLICY", "{}")
+    try:
+        policy_json = json.loads(policy_str) if policy_str else {}
+    except Exception:
+        policy_json = {}
+        
+    template = {
+        "AWSTemplateFormatVersion": "2010-09-09",
+        "Description": "AuthMap Cross-Account Scanner Role",
+        "Resources": {
+            "AuthMapScannerRole": {
+                "Type": "AWS::IAM::Role",
+                "Properties": {
+                    "RoleName": f"AuthMap-Scanner-{external_id[:8]}",
+                    "AssumeRolePolicyDocument": {
+                        "Version": "2012-10-17",
+                        "Statement": [
+                            {
+                                "Effect": "Allow",
+                                "Principal": {
+                                    "AWS": f"arn:aws:iam::{account_id}:root"
+                                },
+                                "Action": "sts:AssumeRole",
+                                "Condition": {
+                                    "StringEquals": {
+                                        "sts:ExternalId": external_id
+                                    }
+                                }
+                            }
+                        ]
+                    },
+                    "Policies": [
+                        {
+                            "PolicyName": "AuthMapScannerPolicy",
+                            "PolicyDocument": policy_json
+                        }
+                    ]
+                }
+            }
+        },
+        "Outputs": {
+            "RoleArn": {
+                "Value": {"Fn::GetAtt": ["AuthMapScannerRole", "Arn"]},
+                "Description": "The ARN of the newly created IAM Role. Paste this back into AuthMap."
+            }
+        }
+    }
+    return JSONResponse(content=template)
+
+
 
 
 scan_status: dict[str, dict] = {}
@@ -202,10 +263,10 @@ async def run_scan_pipeline(scan_id: str, clerk_id: str, req: ScanRequest):
         orchestrator.run_scan(
             scan_id=scan_id,
             clerk_id=clerk_id,
-            aws_access_key=req.aws_access_key_id,
-            aws_secret_key=req.aws_secret_key,
+            aws_role_arn=req.aws_role_arn,
+            aws_external_id=req.aws_external_id,
             aws_region=req.region,
-            gcp_sa_json=req.gcp_service_account_key,
+            gcp_sa_json=req.gcp_sa_json,
             gcp_project_id=req.gcp_project_id,
             selected_compliances=req.selected_compliances,
         )
@@ -271,31 +332,45 @@ async def verify_credentials(
             
     # 2. Verify CSP
     if req.provider == 'aws':
-        if not req.aws_access_key_id or not req.aws_secret_key:
-            return {"valid": False, "error": "Missing AWS credentials."}
+        if not req.aws_role_arn or not req.aws_external_id:
+            return {"valid": False, "error": "Missing AWS Role ARN or External ID."}
         try:
             import boto3
-            client = boto3.client(
-                'sts',
-                aws_access_key_id=req.aws_access_key_id,
-                aws_secret_access_key=req.aws_secret_key,
+            sts = boto3.client('sts')
+            assumed = sts.assume_role(
+                RoleArn=req.aws_role_arn,
+                RoleSessionName="AuthMapVerifySession",
+                ExternalId=req.aws_external_id,
+                DurationSeconds=900
+            )
+            # Verify the assumed credentials work
+            temp_session = boto3.Session(
+                aws_access_key_id=assumed['Credentials']['AccessKeyId'],
+                aws_secret_access_key=assumed['Credentials']['SecretAccessKey'],
+                aws_session_token=assumed['Credentials']['SessionToken'],
                 region_name=req.region
             )
-            client.get_caller_identity()
+            temp_session.client('sts').get_caller_identity()
         except Exception as e:
-            return {"valid": False, "error": f"AWS Authentication Failed: {str(e)}"}
+            return {"valid": False, "error": f"AWS STS Assume Role Failed: {str(e)}"}
             
     elif req.provider == 'gcp':
-        if not req.gcp_service_account_key:
-            return {"valid": False, "error": "Missing GCP Service Account JSON."}
+        if not req.gcp_sa_json or not req.gcp_project_id:
+            return {"valid": False, "error": "Missing GCP Project ID or Service Account JSON."}
         try:
             import json
             from google.oauth2 import service_account
+            from googleapiclient.discovery import build as gcp_build
             
-            creds_info = json.loads(req.gcp_service_account_key)
-            service_account.Credentials.from_service_account_info(creds_info)
+            sa_info = json.loads(req.gcp_sa_json)
+            creds = service_account.Credentials.from_service_account_info(sa_info)
+            crm = gcp_build('cloudresourcemanager', 'v1', credentials=creds)
+            # Try to list projects to verify permissions
+            crm.projects().list().execute()
+        except json.JSONDecodeError:
+            return {"valid": False, "error": "Invalid JSON format for Service Account key."}
         except Exception as e:
-            return {"valid": False, "error": f"GCP Authentication Failed: {str(e)}"}
+            return {"valid": False, "error": f"GCP Service Account Verification Failed: {str(e)}"}
             
     return {"valid": True, "error": None}
 
@@ -313,20 +388,16 @@ async def start_scan(
         neo4j_password=req.neo4j_password,
     )
     
-    try:
-        orchestrator.verify_neo4j_connection()
-    except Exception as e:
-        raise HTTPException(status_code=400, detail=str(e))
-
+    # We defer Neo4j verification because Aura DB is provisioned asynchronously in run_scan_pipeline
     orchestrator.ensure_user_exists(clerk_id)
     cred_id = orchestrator.ensure_csp_credential(
         clerk_id=clerk_id,
         csp_target=req.provider,
-        aws_access=req.aws_access_key_id,
-        aws_secret=req.aws_secret_key,
+        aws_role_arn=req.aws_role_arn,
+        aws_external_id=req.aws_external_id,
         aws_region=req.region,
         gcp_project=req.gcp_project_id,
-        gcp_json=req.gcp_service_account_key
+        gcp_sa_json=req.gcp_sa_json
     )
 
     scan_id = orchestrator.create_scan_record(

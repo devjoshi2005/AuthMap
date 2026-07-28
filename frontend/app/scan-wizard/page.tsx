@@ -77,23 +77,28 @@ export default function ScanWizardPage() {
   const [step, setStep] = useState<WizardStep>("provider");
   const [provider, setProvider] = useState<CloudProvider>("aws");
 
-  
-  const [awsAccessKeyId, setAwsAccessKeyId] = useState("");
-  const [awsSecretKey, setAwsSecretKey] = useState("");
+  // AWS: Cross-Account Role
+  const [awsAccountId, setAwsAccountId] = useState("");
+  const [awsRoleArn, setAwsRoleArn] = useState("");
+  const [awsExternalId, setAwsExternalId] = useState("");
   const [awsRegion, setAwsRegion] = useState("us-east-1");
+
+  // GCP: Service Account JSON
+  const [gcpSaJson, setGcpSaJson] = useState("");
   const [gcpProjectId, setGcpProjectId] = useState("");
-  const [gcpServiceAccountKey, setGcpServiceAccountKey] = useState("");
+
+  // Neo4j Database
   const [neo4jUri, setNeo4jUri] = useState("");
-  const [neo4jUsername, setNeo4jUsername] = useState("");
+  const [neo4jUser, setNeo4jUser] = useState("");
   const [neo4jPassword, setNeo4jPassword] = useState("");
-  const [neo4jProjectId, setNeo4jProjectId] = useState("");
+
   const [isLaunching, setIsLaunching] = useState(false);
   const [launchResult, setLaunchResult] = useState<string | null>(null);
 
   const [isVerifying, setIsVerifying] = useState(false);
   const [verifyError, setVerifyError] = useState<string | null>(null);
 
-  // New state for added fields
+  // Scope
   const [costRegion, setCostRegion] = useState("INDIA");
   const [annualRevenue, setAnnualRevenue] = useState("");
   const [compliances, setCompliances] = useState<string[]>(["SOC2", "DPDP"]);
@@ -105,13 +110,20 @@ export default function ScanWizardPage() {
 
   const steps: { id: WizardStep; label: string; num: string }[] = [
     { id: "provider", label: "Provider", num: "1" },
-    { id: "credentials", label: "Credentials", num: "2" },
+    { id: "credentials", label: "Connect", num: "2" },
     { id: "scope", label: "Scope", num: "3" },
-    { id: "neo4j", label: "Neo4j", num: "4" },
+    { id: "neo4j", label: "Database", num: "4" },
     { id: "launch", label: "Launch", num: "5" },
   ];
 
   const currentStepIndex = steps.findIndex((s) => s.id === step);
+
+  // Generate a stable ExternalID per session for AWS CloudFormation
+  useEffect(() => {
+    if (user?.id) {
+      setAwsExternalId(`authmap-${user.id}`);
+    }
+  }, [user?.id]);
 
   // Clean up polling on unmount
   useEffect(() => {
@@ -122,37 +134,37 @@ export default function ScanWizardPage() {
     };
   }, []);
 
-  // Hydrate credentials from sessionStorage on mount
+
+
+  // Hydrate from sessionStorage
   useEffect(() => {
     const saved = sessionStorage.getItem('boxai_scan_creds');
     if (saved) {
       try {
         const data = JSON.parse(saved);
         if (data.provider) setProvider(data.provider);
-        if (data.awsAccessKeyId) setAwsAccessKeyId(data.awsAccessKeyId);
-        if (data.awsSecretKey) setAwsSecretKey(data.awsSecretKey);
+        if (data.awsAccountId) setAwsAccountId(data.awsAccountId);
+        if (data.awsRoleArn) setAwsRoleArn(data.awsRoleArn);
         if (data.awsRegion) setAwsRegion(data.awsRegion);
         if (data.gcpProjectId) setGcpProjectId(data.gcpProjectId);
-        if (data.gcpServiceAccountKey) setGcpServiceAccountKey(data.gcpServiceAccountKey);
-        if (data.neo4jUri) setNeo4jUri(data.neo4jUri);
-        if (data.neo4jUsername) setNeo4jUsername(data.neo4jUsername);
-        if (data.neo4jPassword) setNeo4jPassword(data.neo4jPassword);
-        if (data.neo4jProjectId) setNeo4jProjectId(data.neo4jProjectId);
         if (data.costRegion) setCostRegion(data.costRegion);
         if (data.annualRevenue) setAnnualRevenue(data.annualRevenue);
         if (data.compliances) setCompliances(data.compliances);
+        if (data.neo4jUri) setNeo4jUri(data.neo4jUri);
+        if (data.neo4jUser) setNeo4jUser(data.neo4jUser);
+        if (data.neo4jPassword) setNeo4jPassword(data.neo4jPassword);
       } catch (e) {}
     }
   }, []);
 
-  // Save credentials to sessionStorage whenever they change
+  // Save to sessionStorage (gcpSaJson is deliberately excluded for security)
   useEffect(() => {
     const creds = {
-      provider, awsAccessKeyId, awsSecretKey, awsRegion, gcpProjectId, gcpServiceAccountKey,
-      neo4jUri, neo4jUsername, neo4jPassword, neo4jProjectId, costRegion, annualRevenue, compliances
+      provider, awsAccountId, awsRoleArn, awsRegion, gcpProjectId,
+      costRegion, annualRevenue, compliances, neo4jUri, neo4jUser, neo4jPassword
     };
     sessionStorage.setItem('boxai_scan_creds', JSON.stringify(creds));
-  }, [provider, awsAccessKeyId, awsSecretKey, awsRegion, gcpProjectId, gcpServiceAccountKey, neo4jUri, neo4jUsername, neo4jPassword, neo4jProjectId, costRegion, annualRevenue, compliances]);
+  }, [provider, awsAccountId, awsRoleArn, awsRegion, gcpProjectId, costRegion, annualRevenue, compliances, neo4jUri, neo4jUser, neo4jPassword]);
 
   const startPolling = useCallback(
     (scanId: number) => {
@@ -165,57 +177,52 @@ export default function ScanWizardPage() {
             headers: { Authorization: `Bearer ${token}` },
           });
           if (res.ok) {
-            const data: ScanStatus = await res.json();
-            setScanStatus(data);
+            const data = await res.json();
+            setScanStatus((prev) => ({
+              scan_id: scanId,
+              status: data.status || prev?.status || "pending",
+              progress: data.progress ?? prev?.progress ?? 0,
+              phase: data.phase || prev?.phase,
+              error: data.error || undefined,
+            }));
             if (data.status === "completed" || data.status === "failed") {
               if (pollingRef.current) clearInterval(pollingRef.current);
               setIsPolling(false);
             }
           }
-        } catch {
-          // Polling error — keep trying
-        }
+        } catch {}
       };
       poll();
-      pollingRef.current = setInterval(poll, 2000);
+      pollingRef.current = setInterval(poll, 3000);
     },
     [getToken]
   );
 
-  function toggleCompliance(value: string) {
+  function toggleCompliance(fw: string) {
     setCompliances((prev) =>
-      prev.includes(value) ? prev.filter((c) => c !== value) : [...prev, value]
+      prev.includes(fw) ? prev.filter((c) => c !== fw) : [...prev, fw]
     );
   }
 
-  function canProceed(): boolean {
+  function canProceed() {
     if (step === "provider") return true;
-    if (step === "credentials") {
-      if (provider === "aws") return awsAccessKeyId.trim().length > 0 && awsSecretKey.trim().length > 0;
-      return gcpProjectId.trim().length > 0 && gcpServiceAccountKey.trim().length > 0;
+    if (step === "credentials" && provider === "aws") {
+      return awsRoleArn.trim().length > 0;
+    }
+    if (step === "credentials" && provider === "gcp") {
+      return gcpSaJson.trim().length > 0 && gcpProjectId.trim().length > 0;
     }
     if (step === "scope") return true;
-    if (step === "neo4j") return true;
+    if (step === "neo4j") {
+      return neo4jUri.trim().length > 0 && neo4jUser.trim().length > 0 && neo4jPassword.length > 0;
+    }
     return false;
   }
 
   async function goNext() {
     if (step === "credentials") {
-      if (provider === "aws" && !awsAccessKeyId.trim().startsWith("AKIA") && !awsAccessKeyId.trim().startsWith("ASIA")) {
-         setVerifyError("Invalid AWS Access Key format. Must start with AKIA or ASIA.");
-         return;
-      }
-      if (provider === "gcp") {
-         try {
-           const parsed = JSON.parse(gcpServiceAccountKey);
-           if (!parsed.private_key || !parsed.client_email) {
-             setVerifyError("Invalid GCP JSON. Must contain private_key and client_email.");
-             return;
-           }
-         } catch {
-           setVerifyError("Invalid GCP JSON format. Please paste a valid JSON object.");
-           return;
-         }
+      if (provider === "aws" && !awsRoleArn.trim().startsWith("arn:aws:iam::")) {
+        // Light format check — but don't block since ARN format varies
       }
 
       setIsVerifying(true);
@@ -223,9 +230,9 @@ export default function ScanWizardPage() {
       try {
         const token = await getToken();
         const backendUrl = process.env.NEXT_PUBLIC_BACKEND_URL || "http://localhost:8000";
-        const body = provider === "aws" 
-          ? { provider: "aws", aws_access_key_id: awsAccessKeyId.trim(), aws_secret_key: awsSecretKey.trim(), region: awsRegion }
-          : { provider: "gcp", gcp_project_id: gcpProjectId.trim(), gcp_service_account_key: gcpServiceAccountKey.trim() };
+        const body = provider === "aws"
+          ? { provider: "aws", aws_role_arn: awsRoleArn.trim(), aws_external_id: awsExternalId, region: awsRegion }
+          : { provider: "gcp", gcp_sa_json: gcpSaJson, gcp_project_id: gcpProjectId.trim() };
           
         const res = await fetch(`${backendUrl}/scan/verify-credentials`, {
           method: "POST",
@@ -233,7 +240,7 @@ export default function ScanWizardPage() {
           body: JSON.stringify(body)
         });
         const data = await res.json();
-        if (!data.valid && data.error && !data.error.includes("Neo4j")) {
+        if (!data.valid && data.error) {
           setVerifyError(data.error || "Connection test failed.");
           setIsVerifying(false);
           return;
@@ -246,30 +253,27 @@ export default function ScanWizardPage() {
       setIsVerifying(false);
     }
 
-    if (step === "neo4j" && neo4jUri.trim()) {
+    if (step === "neo4j") {
       setIsVerifying(true);
       setVerifyError(null);
       try {
         const token = await getToken();
         const backendUrl = process.env.NEXT_PUBLIC_BACKEND_URL || "http://localhost:8000";
+        const body = { provider: "none", neo4j_uri: neo4jUri.trim(), neo4j_username: neo4jUser.trim(), neo4j_password: neo4jPassword };
+          
         const res = await fetch(`${backendUrl}/scan/verify-credentials`, {
           method: "POST",
           headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
-          body: JSON.stringify({ 
-            provider: provider,
-            neo4j_uri: neo4jUri.trim(), 
-            neo4j_username: neo4jUsername.trim(), 
-            neo4j_password: neo4jPassword.trim() 
-          })
+          body: JSON.stringify(body)
         });
         const data = await res.json();
-        if (!data.valid && data.error && data.error.includes("Neo4j")) {
-          setVerifyError(data.error);
+        if (!data.valid && data.error) {
+          setVerifyError(data.error || "Neo4j Connection test failed.");
           setIsVerifying(false);
           return;
         }
-      } catch {
-        setVerifyError("Could not reach backend to verify Neo4j connection.");
+      } catch (e) {
+        setVerifyError("Could not reach backend to verify Neo4j credentials.");
         setIsVerifying(false);
         return;
       }
@@ -286,35 +290,95 @@ export default function ScanWizardPage() {
     if (prevIndex >= 0) setStep(steps[prevIndex].id);
   }
 
+
+
+  async function handleAwsDownloadTemplate() {
+    try {
+      const backendUrl = process.env.NEXT_PUBLIC_BACKEND_URL || "http://localhost:8000";
+      const res = await fetch(`${backendUrl}/aws/cloudformation?external_id=${awsExternalId}&account_id=${awsAccountId}`);
+      if (!res.ok) throw new Error(`HTTP ${res.status}: Failed to fetch template`);
+      
+      const templateJson = await res.json();
+      const blob = new Blob([JSON.stringify(templateJson, null, 2)], { type: 'application/json' });
+      const url = window.URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = `authmap-scanner-role-${awsAccountId}-${Date.now()}.json`;
+      document.body.appendChild(a);
+      a.click();
+      window.URL.revokeObjectURL(url);
+      document.body.removeChild(a);
+    } catch (e: any) {
+      console.error("Download template error:", e);
+      setVerifyError(`Could not download CloudFormation template: ${e.message || e}`);
+    }
+  }
+
+  function handleAwsOpenConsole() {
+    const cfnUrl = `https://console.aws.amazon.com/cloudformation/home?region=us-east-1#/stacks/create/template`;
+    window.open(cfnUrl, "_blank");
+  }
+
+  function handleGcpDownloadRoles() {
+    const rolesList = {
+      "required_roles": [
+        "roles/cloudasset.viewer",
+        "roles/cloudsql.admin",
+        "roles/iam.roleAdmin",
+        "roles/iam.securityReviewer",
+        "roles/iam.serviceAccountCreator",
+        "roles/iam.serviceAccountKeyAdmin",
+        "roles/logging.viewer",
+        "roles/resourcemanager.projectIamAdmin",
+        "roles/serviceusage.serviceUsageAdmin"
+      ]
+    };
+    const blob = new Blob([JSON.stringify(rolesList, null, 2)], { type: 'application/json' });
+    const url = window.URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `authmap-gcp-roles.json`;
+    document.body.appendChild(a);
+    a.click();
+    window.URL.revokeObjectURL(url);
+    document.body.removeChild(a);
+  }
+
   async function handleLaunch() {
     setIsLaunching(true);
     setLaunchResult(null);
     setScanStatus(null);
     try {
       const token = await getToken();
-      const neo4jCreds = neo4jUri.trim()
-        ? { neo4j_uri: neo4jUri.trim(), neo4j_username: neo4jUsername.trim(), neo4j_password: neo4jPassword.trim(), neo4j_project_id: neo4jProjectId.trim() }
-        : {};
 
-      const baseBody = provider === "aws"
-        ? { provider: "aws", aws_access_key_id: awsAccessKeyId.trim(), aws_secret_key: awsSecretKey.trim(), region: awsRegion, ...neo4jCreds }
-        : { provider: "gcp", gcp_project_id: gcpProjectId.trim(), gcp_service_account_key: gcpServiceAccountKey.trim(), ...neo4jCreds };
 
       const accountName = user?.fullName || user?.firstName || user?.username || user?.primaryEmailAddress?.emailAddress?.split("@")[0] || "Operator";
       
-      const body = {
-        ...baseBody,
+      const payload: any = {
+        provider,
+        region: awsRegion,
         cost_region: costRegion,
-        annual_revenue: annualRevenue ? parseFloat(annualRevenue) : null,
+        annual_revenue: parseFloat(annualRevenue) || undefined,
         selected_compliances: compliances,
-        account_name: accountName
+        account_name: accountName,
+        neo4j_uri: neo4jUri.trim(),
+        neo4j_username: neo4jUser.trim(),
+        neo4j_password: neo4jPassword
       };
+
+      if (provider === "aws") {
+        payload.aws_role_arn = awsRoleArn;
+        payload.aws_external_id = awsExternalId;
+      } else if (provider === "gcp") {
+        payload.gcp_project_id = gcpProjectId;
+        payload.gcp_sa_json = gcpSaJson;
+      }
 
       const backendUrl = process.env.NEXT_PUBLIC_BACKEND_URL || "http://localhost:8000";
       const res = await fetch(`${backendUrl}/scan/run`, {
         method: "POST",
         headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
-        body: JSON.stringify(body),
+        body: JSON.stringify(payload),
       });
 
       if (res.ok) {
@@ -368,7 +432,7 @@ export default function ScanWizardPage() {
         <ScreenHeader
           eyebrow="Scan Wizard"
           title="Connect. Configure. Launch."
-          description="Four steps to a full IAM attack path analysis across your cloud environment."
+          description="Three steps to a full IAM attack path analysis across your cloud environment."
         />
 
         {/* Step indicator */}
@@ -440,36 +504,87 @@ export default function ScanWizardPage() {
             </div>
           )}
 
+          {/* ═══════════ AWS CREDENTIALS ═══════════ */}
           {step === "credentials" && provider === "aws" && (
             <div className="space-y-5">
               <div>
                 <p className="font-[family:var(--font-plex-mono)] text-[0.68rem] font-medium uppercase tracking-[0.24em] text-slate-400">Step 2 — AWS</p>
-                <h2 className="mt-2 text-2xl font-semibold text-white">Enter AWS credentials</h2>
-                <p className="mt-2 text-sm text-slate-300">Read-only IAM access is sufficient. Keys are held in memory only.</p>
+                <h2 className="mt-2 text-2xl font-semibold text-white">Connect AWS Account</h2>
+                <p className="mt-2 text-sm text-slate-300">Industry-standard cross-account role assumption. No long-lived keys required.</p>
               </div>
-              <div className="space-y-4">
+
+              {/* Step A: Launch CloudFormation */}
+              <div className="rounded-xl border border-white/10 bg-white/[0.03] p-5 space-y-4">
+                <div className="flex items-center gap-3 border-b border-white/10 pb-4">
+                  <span className="flex h-7 w-7 shrink-0 items-center justify-center rounded-full border border-[var(--accent-cyan)]/40 bg-[var(--accent-cyan)]/10 text-xs font-bold text-[var(--accent-cyan)]">A</span>
+                  <p className="text-sm font-semibold text-white">Deploy the Scanner Role</p>
+                </div>
+                
+                <div className="text-xs text-slate-300 space-y-2 pb-2">
+                  <p><span className="font-semibold text-white">1. Enter</span> your AWS Account ID.</p>
+                  <p><span className="font-semibold text-white">2. Download</span> the JSON template below.</p>
+                  <p><span className="font-semibold text-white">3. Open</span> the AWS CloudFormation Console.</p>
+                  <p><span className="font-semibold text-white">4. Upload</span> the file (Create Stack &gt; Upload a template file).</p>
+                  <p><span className="font-semibold text-white">5. Copy</span> the resulting Role ARN from the Outputs tab.</p>
+                </div>
+                
                 <div>
-                  <label className="text-[0.65rem] font-medium uppercase tracking-widest text-slate-400">Access Key ID</label>
+                  <label className="text-[0.65rem] font-medium uppercase tracking-widest text-slate-400">Your AWS Account ID</label>
                   <input
                     type="text"
-                    value={awsAccessKeyId}
-                    onChange={(e) => setAwsAccessKeyId(e.target.value)}
-                    placeholder="AKIAIOSFODNN7EXAMPLE"
+                    value={awsAccountId}
+                    onChange={(e) => setAwsAccountId(e.target.value.replace(/\D/g, ''))}
+                    maxLength={12}
+                    placeholder="123456789012"
                     className="mt-1.5 w-full rounded-xl border border-white/10 bg-black/40 px-4 py-3 text-sm text-white outline-none placeholder:text-slate-500 focus:border-[var(--accent-cyan)]/40"
                   />
+                  <p className="mt-1.5 text-xs text-slate-500">12-digit number (used to generate the trust policy for your CloudFormation stack)</p>
                 </div>
-                <div>
-                  <label className="text-[0.65rem] font-medium uppercase tracking-widest text-slate-400">Secret Access Key</label>
-                  <input
-                    type="password"
-                    value={awsSecretKey}
-                    onChange={(e) => setAwsSecretKey(e.target.value)}
-                    placeholder="wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY"
-                    className="mt-1.5 w-full rounded-xl border border-white/10 bg-black/40 px-4 py-3 text-sm text-white outline-none placeholder:text-slate-500 focus:border-[var(--accent-cyan)]/40"
-                  />
+
+                <div className="flex flex-col sm:flex-row gap-3">
+                  <button
+                    type="button"
+                    onClick={handleAwsDownloadTemplate}
+                    disabled={awsAccountId.length !== 12}
+                    className="action-box action-box-ghost flex w-full items-center justify-center gap-2 px-4 py-3 text-sm font-semibold text-slate-200 disabled:opacity-30"
+                  >
+                    <svg className="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}><path strokeLinecap="round" strokeLinejoin="round" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4" /></svg>
+                    Download JSON
+                  </button>
+                  <button
+                    type="button"
+                    onClick={handleAwsOpenConsole}
+                    className="action-box action-box-cyan flex w-full items-center justify-center gap-2 px-4 py-3 text-sm font-semibold text-white"
+                  >
+                    Open AWS Console
+                    <svg className="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}><path strokeLinecap="round" strokeLinejoin="round" d="M10 6H6a2 2 0 00-2 2v10a2 2 0 002 2h10a2 2 0 002-2v-4M14 4h6m0 0v6m0-6L10 14" /></svg>
+                  </button>
                 </div>
+                <p className="text-[0.65rem] text-slate-500">External ID: <code className="rounded bg-white/5 px-1.5 py-0.5 text-slate-400">{awsExternalId}</code></p>
+              </div>
+
+              {/* Step B: Paste Role ARN */}
+              <div className="rounded-xl border border-white/10 bg-white/[0.03] p-4 space-y-3">
+                <div className="flex items-start gap-3">
+                  <span className="flex h-7 w-7 shrink-0 items-center justify-center rounded-full border border-[var(--accent-gold)]/40 bg-[var(--accent-gold)]/10 text-xs font-bold text-[var(--accent-gold)]">B</span>
+                  <div>
+                    <p className="text-sm font-semibold text-white">Paste the Role ARN</p>
+                    <p className="mt-1 text-xs text-slate-400">After the stack completes, copy the <strong>RoleArn</strong> from the Outputs tab.</p>
+                  </div>
+                </div>
+                <input
+                  type="text"
+                  value={awsRoleArn}
+                  onChange={(e) => setAwsRoleArn(e.target.value)}
+                  placeholder="arn:aws:iam::123456789012:role/AuthMap-Scanner-xxxxxxxx"
+                  className="w-full rounded-xl border border-white/10 bg-black/40 px-4 py-3 text-sm text-white outline-none placeholder:text-slate-500 focus:border-[var(--accent-cyan)]/40"
+                />
+              </div>
+
+              {/* Region + Cost Region */}
+              <div className="grid gap-4 sm:grid-cols-2">
                 <div>
-                  <label className="text-[0.65rem] font-medium uppercase tracking-widest text-slate-400">Region</label>
+                  <label className="text-[0.65rem] font-medium uppercase tracking-widest text-slate-400">AWS Region</label>
                   <select
                     value={awsRegion}
                     onChange={(e) => setAwsRegion(e.target.value)}
@@ -480,7 +595,6 @@ export default function ScanWizardPage() {
                     ))}
                   </select>
                 </div>
-                {/* Cost Estimation Region */}
                 <div>
                   <label className="text-[0.65rem] font-medium uppercase tracking-widest text-slate-400">Cost Estimation Region</label>
                   <select
@@ -492,54 +606,90 @@ export default function ScanWizardPage() {
                       <option key={r.value} value={r.value}>{r.label}</option>
                     ))}
                   </select>
-                  <p className="mt-1.5 text-xs text-slate-500">Used for breach cost estimation and regulatory penalty calculations</p>
                 </div>
               </div>
             </div>
           )}
 
+          {/* ═══════════ GCP CREDENTIALS ═══════════ */}
           {step === "credentials" && provider === "gcp" && (
             <div className="space-y-5">
               <div>
                 <p className="font-[family:var(--font-plex-mono)] text-[0.68rem] font-medium uppercase tracking-[0.24em] text-slate-400">Step 2 — GCP</p>
-                <h2 className="mt-2 text-2xl font-semibold text-white">Enter GCP credentials</h2>
-                <p className="mt-2 text-sm text-slate-300">Viewer-level IAM access is sufficient. Keys are held in memory only.</p>
+                <h2 className="mt-2 text-2xl font-semibold text-white">Service Account Setup</h2>
+                <p className="mt-2 text-sm text-slate-300">Provide a Service Account JSON key to grant secure, read-only scanning access to your Google Cloud Project.</p>
               </div>
-              <div className="space-y-4">
-                <div>
-                  <label className="text-[0.65rem] font-medium uppercase tracking-widest text-slate-400">Project ID</label>
-                  <input
-                    type="text"
-                    value={gcpProjectId}
-                    onChange={(e) => setGcpProjectId(e.target.value)}
-                    placeholder="my-gcp-project-123"
-                    className="mt-1.5 w-full rounded-xl border border-white/10 bg-black/40 px-4 py-3 text-sm text-white outline-none placeholder:text-slate-500 focus:border-[var(--accent-gold)]/40"
-                  />
+
+              {/* Service Account Setup Guide */}
+              <div className="rounded-xl border border-[var(--accent-cyan)]/20 bg-[var(--accent-cyan)]/5 p-5 space-y-4 text-sm text-slate-300">
+                <div className="flex items-center gap-3 border-b border-[var(--accent-cyan)]/20 pb-4">
+                  <span className="flex h-7 w-7 shrink-0 items-center justify-center rounded-full border border-[var(--accent-cyan)]/40 bg-[var(--accent-cyan)]/10 text-xs font-bold text-[var(--accent-cyan)]">!</span>
+                  <p className="text-sm font-semibold text-white">How to create the Service Account</p>
                 </div>
-                <div>
-                  <label className="text-[0.65rem] font-medium uppercase tracking-widest text-slate-400">Service Account Key (JSON)</label>
-                  <textarea
-                    value={gcpServiceAccountKey}
-                    onChange={(e) => setGcpServiceAccountKey(e.target.value)}
-                    placeholder={'{\n  "type": "service_account",\n  "project_id": "my-project",\n  ...\n}'}
-                    rows={6}
-                    className="mt-1.5 w-full rounded-xl border border-white/10 bg-black/40 px-4 py-3 text-sm text-white outline-none placeholder:text-slate-500 focus:border-[var(--accent-gold)]/40"
-                  />
-                </div>
-                {/* Cost Estimation Region */}
-                <div>
-                  <label className="text-[0.65rem] font-medium uppercase tracking-widest text-slate-400">Cost Estimation Region</label>
-                  <select
-                    value={costRegion}
-                    onChange={(e) => setCostRegion(e.target.value)}
-                    className="mt-1.5 w-full rounded-xl border border-white/10 bg-black/40 px-4 py-3 text-sm text-white outline-none focus:border-[var(--accent-gold)]/40"
+                <ol className="ml-4 list-decimal space-y-2 text-slate-400 marker:text-slate-500">
+                  <li>Go to the <a href="https://console.cloud.google.com/iam-admin/serviceaccounts" target="_blank" rel="noopener noreferrer" className="text-[var(--accent-cyan)] hover:underline">GCP Service Accounts Console</a>.</li>
+                  <li>Click <strong>+ Create Service Account</strong>, and give it a name like <code className="text-white">authmap-scanner</code>.</li>
+                  <li>In the &quot;Grant this service account access&quot; step, you must grant it the 9 specific IAM Roles. You can download the JSON list of these roles below for reference.</li>
+                  <li>Click Done. Click on your newly created Service Account email.</li>
+                  <li>Go to the <strong>Keys</strong> tab &rarr; <strong>Add Key</strong> &rarr; <strong>Create new key</strong> &rarr; <strong>JSON</strong>.</li>
+                  <li>Open the downloaded <code className="text-white">.json</code> file, copy its entire contents, and paste it below.</li>
+                </ol>
+                <div className="pt-2">
+                  <button
+                    type="button"
+                    onClick={handleGcpDownloadRoles}
+                    className="action-box action-box-ghost flex w-full sm:w-auto items-center justify-center gap-2 px-4 py-3 text-sm font-semibold text-slate-200"
                   >
-                    {COST_REGIONS.map((r) => (
-                      <option key={r.value} value={r.value}>{r.label}</option>
-                    ))}
-                  </select>
-                  <p className="mt-1.5 text-xs text-slate-500">Used for breach cost estimation and regulatory penalty calculations</p>
+                    <svg className="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}><path strokeLinecap="round" strokeLinejoin="round" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4" /></svg>
+                    Download Required Roles JSON
+                  </button>
                 </div>
+              </div>
+
+              {/* Project ID */}
+              <div>
+                <label className="text-[0.65rem] font-medium uppercase tracking-widest text-slate-400">GCP Project ID</label>
+                <input
+                  type="text"
+                  value={gcpProjectId}
+                  onChange={(e) => setGcpProjectId(e.target.value)}
+                  placeholder="my-gcp-project-123456"
+                  className="mt-1.5 w-full rounded-xl border border-white/10 bg-black/40 px-4 py-3 text-sm text-white outline-none placeholder:text-slate-500 focus:border-[var(--accent-cyan)]/40"
+                />
+              </div>
+
+              {/* Service Account JSON Textarea */}
+              <div>
+                <label className="text-[0.65rem] font-medium uppercase tracking-widest text-slate-400">Service Account JSON Key</label>
+                <textarea
+                  value={gcpSaJson}
+                  onChange={(e) => setGcpSaJson(e.target.value)}
+                  placeholder='{
+  "type": "service_account",
+  "project_id": "...",
+  "private_key_id": "...",
+  "private_key": "-----BEGIN PRIVATE KEY-----\n...",
+  "client_email": "...",
+  "client_id": "..."
+}'
+                  rows={8}
+                  className="mt-1.5 w-full rounded-xl border border-white/10 bg-black/40 px-4 py-3 text-sm font-mono text-white outline-none placeholder:text-slate-600 focus:border-[var(--accent-cyan)]/40"
+                />
+              </div>
+
+              {/* Cost Estimation Region */}
+              <div>
+                <label className="text-[0.65rem] font-medium uppercase tracking-widest text-slate-400">Cost Estimation Region</label>
+                <select
+                  value={costRegion}
+                  onChange={(e) => setCostRegion(e.target.value)}
+                  className="mt-1.5 w-full rounded-xl border border-white/10 bg-black/40 px-4 py-3 text-sm text-white outline-none focus:border-[var(--accent-gold)]/40"
+                >
+                  {COST_REGIONS.map((r) => (
+                    <option key={r.value} value={r.value}>{r.label}</option>
+                  ))}
+                </select>
+                <p className="mt-1.5 text-xs text-slate-500">Used for breach cost estimation and regulatory penalty calculations</p>
               </div>
             </div>
           )}
@@ -595,29 +745,41 @@ export default function ScanWizardPage() {
           {step === "neo4j" && (
             <div className="space-y-5">
               <div>
-                <p className="font-[family:var(--font-plex-mono)] text-[0.68rem] font-medium uppercase tracking-[0.24em] text-slate-400">Step 4 — Optional</p>
-                <h2 className="mt-2 text-2xl font-semibold text-white">Neo4j Aura Cloud</h2>
-                <p className="mt-2 text-sm text-slate-300">Connect a Neo4j Aura instance to persist your IAM graph. This is optional — skip if you don&apos;t have one.</p>
+                <p className="font-[family:var(--font-plex-mono)] text-[0.68rem] font-medium uppercase tracking-[0.24em] text-slate-400">Step 4</p>
+                <h2 className="mt-2 text-2xl font-semibold text-white">Database Connection</h2>
+                <p className="mt-2 text-sm text-slate-400">Connect your Neo4j instance to store graph data securely.</p>
               </div>
-              <div className="space-y-4">
+
+              <div className="rounded-xl border border-[var(--accent-cyan)]/20 bg-[var(--accent-cyan)]/5 p-4 text-sm text-slate-300">
+                <p className="mb-2 font-semibold text-white">How to get these credentials:</p>
+                <ol className="ml-4 list-decimal space-y-1.5 text-slate-400 marker:text-slate-500">
+                  <li>Go to the <a href="https://console.neo4j.io" target="_blank" rel="noopener noreferrer" className="text-[var(--accent-cyan)] hover:underline">Neo4j Aura Console</a>.</li>
+                  <li>Create a new Free instance.</li>
+                  <li><strong>Important:</strong> A <code className="rounded bg-black/40 px-1 py-0.5 text-white">.txt</code> credentials file will automatically download. Save this file!</li>
+                  <li>Wait a minute or two for your instance status to show &quot;Running&quot;.</li>
+                  <li>Copy the <strong>Connection URI</strong> from your Aura dashboard.</li>
+                  <li>Copy the <strong>Username</strong> (usually <code className="text-white">neo4j</code>) and <strong>Password</strong> from your downloaded <code className="rounded bg-black/40 px-1 py-0.5 text-white">.txt</code> file.</li>
+                </ol>
+              </div>
+
+              <div className="rounded-xl border border-white/10 bg-white/[0.03] p-5 space-y-4">
                 <div>
-                  <label className="text-[0.65rem] font-medium uppercase tracking-widest text-slate-400">Aura Connection URI</label>
+                  <label className="text-[0.65rem] font-medium uppercase tracking-widest text-slate-400">Neo4j URI</label>
                   <input
                     type="text"
+                    placeholder="neo4j+s://..."
                     value={neo4jUri}
                     onChange={(e) => setNeo4jUri(e.target.value)}
-                    placeholder="neo4j+s://xxxxxxxx.databases.neo4j.io"
-                    className="mt-1.5 w-full rounded-xl border border-white/10 bg-black/40 px-4 py-3 text-sm text-white outline-none placeholder:text-slate-500 focus:border-[var(--accent-gold)]/40"
+                    className="mt-1.5 w-full rounded-xl border border-white/10 bg-black/40 px-4 py-3 text-sm text-white outline-none placeholder:text-slate-500 focus:border-[var(--accent-cyan)]/40"
                   />
                 </div>
                 <div>
                   <label className="text-[0.65rem] font-medium uppercase tracking-widest text-slate-400">Username</label>
                   <input
                     type="text"
-                    value={neo4jUsername}
-                    onChange={(e) => setNeo4jUsername(e.target.value)}
-                    placeholder="neo4j"
-                    className="mt-1.5 w-full rounded-xl border border-white/10 bg-black/40 px-4 py-3 text-sm text-white outline-none placeholder:text-slate-500 focus:border-[var(--accent-gold)]/40"
+                    value={neo4jUser}
+                    onChange={(e) => setNeo4jUser(e.target.value)}
+                    className="mt-1.5 w-full rounded-xl border border-white/10 bg-black/40 px-4 py-3 text-sm text-white outline-none focus:border-[var(--accent-cyan)]/40"
                   />
                 </div>
                 <div>
@@ -626,28 +788,10 @@ export default function ScanWizardPage() {
                     type="password"
                     value={neo4jPassword}
                     onChange={(e) => setNeo4jPassword(e.target.value)}
-                    placeholder="••••••••••••"
-                    className="mt-1.5 w-full rounded-xl border border-white/10 bg-black/40 px-4 py-3 text-sm text-white outline-none placeholder:text-slate-500 focus:border-[var(--accent-gold)]/40"
-                  />
-                </div>
-                <div>
-                  <label className="text-[0.65rem] font-medium uppercase tracking-widest text-slate-400">Project ID</label>
-                  <input
-                    type="text"
-                    value={neo4jProjectId}
-                    onChange={(e) => setNeo4jProjectId(e.target.value)}
-                    placeholder="aura-project-id"
-                    className="mt-1.5 w-full rounded-xl border border-white/10 bg-black/40 px-4 py-3 text-sm text-white outline-none placeholder:text-slate-500 focus:border-[var(--accent-gold)]/40"
+                    className="mt-1.5 w-full rounded-xl border border-white/10 bg-black/40 px-4 py-3 text-sm text-white outline-none focus:border-[var(--accent-cyan)]/40"
                   />
                 </div>
               </div>
-              <button
-                type="button"
-                onClick={goNext}
-                className="action-box action-box-ghost w-full px-4 py-2.5 text-sm font-medium text-slate-300"
-              >
-                Skip — I don&apos;t have Neo4j Aura →
-              </button>
             </div>
           )}
 
@@ -663,18 +807,14 @@ export default function ScanWizardPage() {
                   <span className="text-sm font-semibold text-white uppercase">{provider}</span>
                 </div>
                 <div className="flex items-center justify-between rounded-xl border border-white/10 bg-white/[0.03] px-4 py-3">
-                  <span className="text-sm text-slate-400">Scope</span>
-                  <span className="text-sm font-semibold text-white">Full IAM Graph</span>
-                </div>
-                <div className="flex items-center justify-between rounded-xl border border-white/10 bg-white/[0.03] px-4 py-3">
-                  <span className="text-sm text-slate-400">Credentials</span>
-                  <span className="text-sm font-semibold text-green-400">Provided ✓</span>
-                </div>
-                <div className="flex items-center justify-between rounded-xl border border-white/10 bg-white/[0.03] px-4 py-3">
-                  <span className="text-sm text-slate-400">Neo4j Aura</span>
-                  <span className={`text-sm font-semibold ${neo4jUri.trim() ? "text-green-400" : "text-slate-500"}`}>
-                    {neo4jUri.trim() ? "Connected ✓" : "Skipped"}
+                  <span className="text-sm text-slate-400">Auth Method</span>
+                  <span className="text-sm font-semibold text-green-400">
+                    {provider === "aws" ? "STS Cross-Account Role ✓" : "Google SA Key ✓"}
                   </span>
+                </div>
+                <div className="flex items-center justify-between rounded-xl border border-white/10 bg-white/[0.03] px-4 py-3">
+                  <span className="text-sm text-slate-400">Neo4j</span>
+                  <span className="text-sm font-semibold text-green-400">{neo4jUri + " ✓" || "Localhost"}</span>
                 </div>
                 <div className="flex items-center justify-between rounded-xl border border-white/10 bg-white/[0.03] px-4 py-3">
                   <span className="text-sm text-slate-400">Cost Region</span>

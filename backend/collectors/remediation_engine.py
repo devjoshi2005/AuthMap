@@ -113,8 +113,8 @@ class ComplianceMapper:
             })
 
         for mapping in rule_mappings:
-            for fw, (control, desc) in mapping.items():
-                if fw.value in frameworks:
+            for fw_key, (control, desc) in mapping.items():
+                if fw_key.value in frameworks:
                     violations.append({"entity": node_id, "control": control, "description": desc})
 
         return violations

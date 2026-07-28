@@ -249,8 +249,8 @@ class ScanOrchestrator:
             }).execute()
 
     def ensure_csp_credential(self, clerk_id: str, csp_target: str, 
-                              aws_access: Optional[str] = None, aws_secret: Optional[str] = None, aws_region: Optional[str] = None,
-                              gcp_project: Optional[str] = None, gcp_json: Optional[str] = None) -> str:
+                              aws_role_arn: Optional[str] = None, aws_external_id: Optional[str] = None, aws_region: Optional[str] = None,
+                              gcp_project: Optional[str] = None, gcp_sa_json: Optional[str] = None) -> str:
         res = self.supabase.table('csp_credentials').select('id').eq('clerk_id', clerk_id).eq('csp_type', csp_target).execute()
         
         cred_data = {
@@ -260,16 +260,16 @@ class ScanOrchestrator:
             'is_active': True
         }
         
-        if csp_target.lower() == 'aws' and aws_access:
+        if csp_target.lower() == 'aws' and aws_role_arn:
             cred_data.update({
-                'aws_access_key_id': aws_access,
-                'aws_secret_access_key': aws_secret,
+                'aws_access_key_id': aws_role_arn,          # Repurpose column: stores Role ARN
+                'aws_secret_access_key': aws_external_id,   # Repurpose column: stores External ID
                 'aws_region': aws_region
             })
         elif csp_target.lower() == 'gcp' and gcp_project:
             cred_data.update({
                 'gcp_project_id': gcp_project,
-                'gcp_credentials_json': gcp_json
+                'gcp_credentials_json': gcp_sa_json
             })
             
         if res.data:
@@ -313,8 +313,8 @@ class ScanOrchestrator:
             return 'ISO27001'
         return c
 
-    def run_scan(self, scan_id: str, clerk_id: str, aws_access_key: str = None,
-                 aws_secret_key: str = None, aws_region: str = 'us-east-1',
+    def run_scan(self, scan_id: str, clerk_id: str, aws_role_arn: str = None,
+                 aws_external_id: str = None, aws_region: str = 'us-east-1',
                  gcp_sa_json: str = None, gcp_project_id: str = None,
                  selected_compliances: List[str] = None):
 
@@ -328,11 +328,11 @@ class ScanOrchestrator:
         )
 
         try:
-            if aws_access_key and aws_secret_key:
+            if aws_role_arn and aws_external_id:
                 self._update_phase(scan_id, 'discovery', 25)
                 aws_graph = scanner.scan_aws(
-                    access_key=aws_access_key,
-                    secret_key=aws_secret_key,
+                    role_arn=aws_role_arn,
+                    external_id=aws_external_id,
                     region=aws_region,
                     selected_compliances=selected_compliances,
                     scan_id=scan_id
@@ -346,7 +346,7 @@ class ScanOrchestrator:
             if gcp_sa_json:
                 self._update_phase(scan_id, 'discovery', 75)
                 gcp_graph = scanner.scan_gcp(
-                    service_account_json=gcp_sa_json,
+                    sa_json=gcp_sa_json,
                     project_id=gcp_project_id,
                     selected_compliances=selected_compliances,
                     scan_id=scan_id
@@ -451,23 +451,17 @@ class ScanOrchestrator:
     def _store_temporal_events_gcp(self, scan_id: str, clerk_id: str, graph,
                                     gcp_sa_json: str, gcp_project_id: str):
         
-        import os
-        from google.oauth2 import service_account as gcp_service_account
+        import json
+        from google.oauth2 import service_account
         from google.cloud import logging as cloud_logging
 
         events_to_insert = []
 
         try:
-            if os.path.exists(gcp_sa_json):
-                with open(gcp_sa_json, 'r') as f:
-                    creds_info = json.load(f)
-            else:
-                creds_info = json.loads(gcp_sa_json)
+            project_id = gcp_project_id
 
-            project_id = gcp_project_id or creds_info.get('project_id')
-            credentials = gcp_service_account.Credentials.from_service_account_info(
-                creds_info,
-                scopes=['https://www.googleapis.com/auth/cloud-platform']
+            credentials = service_account.Credentials.from_service_account_info(
+                json.loads(gcp_sa_json)
             )
 
             client = cloud_logging.Client(project=project_id, credentials=credentials)

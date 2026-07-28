@@ -15,7 +15,7 @@ export default function SignUpPage() {
         path="/sign-up"
         routing="path"
         signInUrl="/sign-in"
-        fallbackRedirectUrl="/guide"
+        fallbackRedirectUrl="/"
         appearance={clerkAppearance}
       />
     </AuthPageShell>

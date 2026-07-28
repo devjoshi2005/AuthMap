@@ -584,12 +584,12 @@ export default function GraphPage() {
                         Overprivileged
                       </span>
                     )}
-                    {selectedNode.has_mfa === false && (
+                    {(selectedNode.type?.toLowerCase() === 'user' || selectedNode.type?.toLowerCase() === 'serviceaccount') && selectedNode.has_mfa === false && (
                       <span className="rounded-full border border-yellow-500/40 bg-yellow-500/10 px-2.5 py-1 text-xs font-semibold text-yellow-400">
                         No MFA
                       </span>
                     )}
-                    {selectedNode.is_dormant && (
+                    {(selectedNode.type?.toLowerCase() === 'user' || selectedNode.type?.toLowerCase() === 'role' || selectedNode.type?.toLowerCase() === 'serviceaccount') && selectedNode.is_dormant && (
                       <span className="rounded-full border border-slate-500/40 bg-slate-500/10 px-2.5 py-1 text-xs font-semibold text-slate-400">
                         Dormant
                       </span>

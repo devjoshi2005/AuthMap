@@ -7,6 +7,7 @@ from enum import Enum
 import boto3
 from botocore.exceptions import ClientError
 from google.oauth2 import service_account
+
 from googleapiclient.discovery import build
 from googleapiclient.errors import HttpError
 from neo4j import GraphDatabase
@@ -274,12 +275,27 @@ class PermissionClassifier:
 
 
 class AWSIAMScanner:
-    def __init__(self, access_key_id: str, secret_access_key: str, region: str = "us-east-1"):
+    def __init__(self, role_arn: str, external_id: str, region: str = "us-east-1"):
+        # The backend uses its own default credentials (from env vars or IAM roles) to assume the customer role.
+        base_session = boto3.Session()
+        sts_client = base_session.client('sts')
+        
+        assumed_role_object = sts_client.assume_role(
+            RoleArn=role_arn,
+            RoleSessionName="AuthMapScannerSession",
+            ExternalId=external_id,
+            DurationSeconds=3600
+        )
+        
+        credentials = assumed_role_object['Credentials']
+        
         self.session = boto3.Session(
-            aws_access_key_id=access_key_id,
-            aws_secret_access_key=secret_access_key,
+            aws_access_key_id=credentials['AccessKeyId'],
+            aws_secret_access_key=credentials['SecretAccessKey'],
+            aws_session_token=credentials['SessionToken'],
             region_name=region
         )
+        
         self.iam = self.session.client('iam')
         self.sts = self.session.client('sts')
         self.cloudtrail = self.session.client('cloudtrail')
@@ -571,19 +587,26 @@ class AWSIAMScanner:
         """Get last used info for all access keys."""
         key_data = {}
         try:
-            paginator = self.iam.get_paginator('list_access_keys')
-            for page in paginator.paginate():
-                for key in page['AccessKeyMetadata']:
-                    key_id = key['AccessKeyId']
+            user_paginator = self.iam.get_paginator('list_users')
+            for user_page in user_paginator.paginate():
+                for user in user_page['Users']:
+                    username = user['UserName']
                     try:
-                        last_used = self.iam.get_access_key_last_used(AccessKeyId=key_id)
-                        key_data[key_id] = {
-                            'last_used_date': str(last_used.get('AccessKeyLastUsed', {}).get('LastUsedDate', '')),
-                            'service_name': last_used.get('AccessKeyLastUsed', {}).get('ServiceName', ''),
-                            'region': last_used.get('AccessKeyLastUsed', {}).get('Region', '')
-                        }
-                    except Exception:
-                        key_data[key_id] = {'last_used_date': 'never', 'service_name': '', 'region': ''}
+                        key_paginator = self.iam.get_paginator('list_access_keys')
+                        for key_page in key_paginator.paginate(UserName=username):
+                            for key in key_page['AccessKeyMetadata']:
+                                key_id = key['AccessKeyId']
+                                try:
+                                    last_used = self.iam.get_access_key_last_used(AccessKeyId=key_id)
+                                    key_data[key_id] = {
+                                        'last_used_date': str(last_used.get('AccessKeyLastUsed', {}).get('LastUsedDate', '')),
+                                        'service_name': last_used.get('AccessKeyLastUsed', {}).get('ServiceName', ''),
+                                        'region': last_used.get('AccessKeyLastUsed', {}).get('Region', '')
+                                    }
+                                except Exception:
+                                    key_data[key_id] = {'last_used_date': 'never', 'service_name': '', 'region': ''}
+                    except Exception as e:
+                        logger.warning(f"Could not get access keys for user {username}: {e}")
         except Exception as e:
             logger.warning(f"Could not get access key last used: {e}")
         return key_data
@@ -1176,16 +1199,14 @@ class GCPIAMScanner:
       5. iam.simulateActAsServiceAccount
     """
 
-    def __init__(self, service_account_json: str, project_id: Optional[str] = None):
-        if os.path.exists(service_account_json):
-            with open(service_account_json, 'r') as f:
-                creds_info = json.load(f)
-        else:
-            creds_info = json.loads(service_account_json)
-
-        self.project_id = project_id or creds_info.get('project_id')
+    def __init__(self, sa_json: str, project_id: str):
+        self.project_id = project_id
+        
+        import json
+        from google.oauth2 import service_account
+        sa_info = json.loads(sa_json)
         self.credentials = service_account.Credentials.from_service_account_info(
-            creds_info,
+            sa_info,
             scopes=['https://www.googleapis.com/auth/cloud-platform']
         )
 
@@ -1668,13 +1689,13 @@ class IAMScanner:
     def __init__(self, neo4j_uri: str, neo4j_user: str, neo4j_password: str):
         self.neo4j = Neo4jImporter(neo4j_uri, neo4j_user, neo4j_password)
 
-    def scan_aws(self, access_key: str, secret_key: str, region: str = "us-east-1",
+    def scan_aws(self, role_arn: str, external_id: str, region: str = "us-east-1",
                  selected_compliances: List[str] = None, scan_id: str = None) -> IAMGraph:
         if selected_compliances is None:
             selected_compliances = ['SOC2']
 
         try:
-            scanner = AWSIAMScanner(access_key, secret_key, region)
+            scanner = AWSIAMScanner(role_arn, external_id, region)
             graph = scanner.scan(selected_compliances=selected_compliances, scan_id=scan_id)
 
             if not graph.stats.get('error'):
@@ -1693,13 +1714,13 @@ class IAMScanner:
                 compliance_context={'selected_compliances': selected_compliances}
             )
 
-    def scan_gcp(self, service_account_json: str, project_id: str = None,
+    def scan_gcp(self, sa_json: str, project_id: str = None,
                  selected_compliances: List[str] = None, scan_id: str = None) -> IAMGraph:
         if selected_compliances is None:
             selected_compliances = ['SOC2']
 
         try:
-            scanner = GCPIAMScanner(service_account_json, project_id)
+            scanner = GCPIAMScanner(sa_json, project_id)
             graph = scanner.scan(selected_compliances=selected_compliances, scan_id=scan_id)
 
             if not graph.stats.get('error'):
