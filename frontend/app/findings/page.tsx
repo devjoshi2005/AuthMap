@@ -1,7 +1,7 @@
 "use client";
 
 import { useAuth } from "@clerk/nextjs";
-import { useEffect, useState } from "react";
+import { useEffect, useState, useRef } from "react";
 import Link from "next/link";
 import { AppShell } from "@/components/app-shell";
 import { ScreenHeader } from "@/components/screen-header";
@@ -107,6 +107,20 @@ export default function FindingsPage() {
   const [error, setError] = useState("");
   const [findings, setFindings] = useState<FindingsData | null>(null);
 
+  const contentRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    const timer = setTimeout(() => {
+      if (contentRef.current) {
+        const headerOffset = 80;
+        const elementPosition = contentRef.current.getBoundingClientRect().top;
+        const offsetPosition = elementPosition + window.scrollY - headerOffset;
+        window.scrollTo({ top: offsetPosition, behavior: "smooth" });
+      }
+    }, 150);
+    return () => clearTimeout(timer);
+  }, []);
+
   useEffect(() => {
     if (!isLoaded) return;
     
@@ -173,9 +187,9 @@ export default function FindingsPage() {
 
   return (
     <AppShell>
-      <div className="space-y-8 pb-10">
+      <div className="space-y-6 pb-10" ref={contentRef}>
         <ScreenHeader
-          eyebrow="Findings"
+          eyebrow="Security Findings"
           title="IAM security findings from your analysis."
           description="Risk-scored findings from AuthMap's 4-layer privilege escalation detection. Each category reflects a distinct IAM attack vector across your AWS and GCP environments."
         />

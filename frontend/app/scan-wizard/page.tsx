@@ -125,6 +125,8 @@ export default function ScanWizardPage() {
     }
   }, [user?.id]);
 
+  const contentRef = useRef<HTMLDivElement>(null);
+
   // Clean up polling on unmount
   useEffect(() => {
     return () => {
@@ -134,6 +136,18 @@ export default function ScanWizardPage() {
     };
   }, []);
 
+  // Auto-scroll to content when step changes
+  useEffect(() => {
+    const timer = setTimeout(() => {
+      if (contentRef.current) {
+        const headerOffset = 80;
+        const elementPosition = contentRef.current.getBoundingClientRect().top;
+        const offsetPosition = elementPosition + window.scrollY - headerOffset;
+        window.scrollTo({ top: offsetPosition, behavior: "smooth" });
+      }
+    }, 150);
+    return () => clearTimeout(timer);
+  }, [step]);
 
 
   // Hydrate from sessionStorage
@@ -469,7 +483,7 @@ export default function ScanWizardPage() {
 
   return (
     <AppShell>
-      <div className="space-y-8 pb-10">
+      <div className="space-y-8 pb-10" ref={contentRef}>
         <ScreenHeader
           eyebrow="Scan Wizard"
           title="Connect. Configure. Launch."
@@ -684,6 +698,21 @@ export default function ScanWizardPage() {
                     <svg className="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}><path strokeLinecap="round" strokeLinejoin="round" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4" /></svg>
                     Download Required Roles JSON
                   </button>
+                </div>
+                
+                <div className="mt-4 pt-4 border-t border-[var(--accent-cyan)]/20">
+                  <p className="text-sm font-semibold text-white mb-2">Automate Binding via Cloud Shell</p>
+                  <p className="text-xs text-slate-400 mb-2">After downloading the JSON and uploading it to your Cloud Shell, you can quickly bind all roles by running this command (replace placeholders):</p>
+                  <div className="bg-black/50 p-3 rounded-lg overflow-x-auto border border-white/5">
+                    <pre className="text-xs text-slate-300 font-mono whitespace-pre-wrap">
+{`ROLES=$(cat authmap-gcp-roles.json | jq -r '.required_roles[]')
+for role in $ROLES; do
+  gcloud projects add-iam-policy-binding YOUR_PROJECT_ID \\
+    --member="serviceAccount:YOUR_SA_EMAIL" \\
+    --role="$role"
+done`}
+                    </pre>
+                  </div>
                 </div>
               </div>
 

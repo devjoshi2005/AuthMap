@@ -1,7 +1,7 @@
 "use client";
 
 import { useAuth } from "@clerk/nextjs";
-import { useEffect, useState } from "react";
+import { useEffect, useState, useRef } from "react";
 import Link from "next/link";
 import { AppShell } from "@/components/app-shell";
 import { ScreenHeader } from "@/components/screen-header";
@@ -65,6 +65,20 @@ export default function CostMatrixPage() {
   const [noScan, setNoScan] = useState(false);
   const [costData, setCostData] = useState<CostAnalysis | null>(null);
 
+  const contentRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    const timer = setTimeout(() => {
+      if (contentRef.current) {
+        const headerOffset = 80;
+        const elementPosition = contentRef.current.getBoundingClientRect().top;
+        const offsetPosition = elementPosition + window.scrollY - headerOffset;
+        window.scrollTo({ top: offsetPosition, behavior: "smooth" });
+      }
+    }, 150);
+    return () => clearTimeout(timer);
+  }, []);
+
   useEffect(() => {
     if (!isLoaded) return;
     async function load() {
@@ -113,7 +127,7 @@ export default function CostMatrixPage() {
 
   return (
     <AppShell>
-      <div className="space-y-8 pb-10">
+      <div className="space-y-8 pb-10" ref={contentRef}>
         <ScreenHeader
           eyebrow="Cost Matrix"
           title="Cloud spend vs IAM risk — one scatter plot."

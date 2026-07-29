@@ -1,19 +1,77 @@
-import { auth } from "@clerk/nextjs/server";
+"use client";
+
+import { useAuth } from "@clerk/nextjs";
 import Link from "next/link";
+import { useEffect, useState, useRef } from "react";
 
 import { AppShell } from "../components/app-shell";
 import { AuthLanding } from "../components/auth-landing";
 
-export default async function Home() {
-  const { userId } = await auth();
+export default function Home() {
+  const { userId, isLoaded, getToken } = useAuth();
+  const [hasScan, setHasScan] = useState<boolean>(true); // Default true to avoid flash
+  const [loadingScan, setLoadingScan] = useState(true);
+  const contentRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    if (!isLoaded || !userId) return;
+    async function checkScan() {
+      try {
+        const token = await getToken();
+        if (!token) return;
+        const backendUrl = process.env.NEXT_PUBLIC_BACKEND_URL || "http://localhost:8000";
+        const res = await fetch(`${backendUrl}/scan/results/latest`, {
+          headers: { Authorization: `Bearer ${token}` },
+        });
+        if (res.ok) {
+          setHasScan(true);
+        } else {
+          setHasScan(false);
+        }
+      } catch {
+        setHasScan(false);
+      } finally {
+        setLoadingScan(false);
+      }
+    }
+    checkScan();
+  }, [isLoaded, userId, getToken]);
+
+  useEffect(() => {
+    if (isLoaded && userId) {
+      const timer = setTimeout(() => {
+        if (contentRef.current) {
+          const headerOffset = 80;
+          const elementPosition = contentRef.current.getBoundingClientRect().top;
+          const offsetPosition = elementPosition + window.scrollY - headerOffset;
+          window.scrollTo({ top: offsetPosition, behavior: "smooth" });
+        }
+      }, 150);
+      return () => clearTimeout(timer);
+    }
+  }, [isLoaded, userId]);
+
+  if (!isLoaded) {
+    return null;
+  }
 
   if (!userId) {
     return <AuthLanding isSignedIn={false} />;
   }
 
+  const isPreScan = !loadingScan && !hasScan;
+
+  const scanWizardClasses = isPreScan
+    ? "group rounded-[1.6rem] border border-[var(--accent-cyan)] bg-[linear-gradient(180deg,rgba(158,193,182,0.15),rgba(255,255,255,0.05))] p-6 shadow-[0_20px_50px_rgba(158,193,182,0.2)] transition"
+    : "group rounded-[1.6rem] border border-[var(--accent-cyan)]/30 bg-[linear-gradient(180deg,rgba(158,193,182,0.08),rgba(255,255,255,0.02))] p-6 transition hover:border-[var(--accent-cyan)]/50 hover:shadow-[0_20px_50px_rgba(158,193,182,0.08)]";
+
+  const otherOptionsClasses = isPreScan
+    ? "group rounded-[1.6rem] border border-white/5 bg-white/[0.02] p-6 transition opacity-40 hover:opacity-100 hover:border-white/20"
+    : "group rounded-[1.6rem] border border-white/10 bg-white/[0.04] p-6 transition hover:border-white/18 hover:shadow-[0_20px_50px_rgba(0,0,0,0.12)]";
+
   return (
     <AppShell>
-      <div className="space-y-6 pb-10">
+      <div className="space-y-6 pb-10" ref={contentRef}>
         {/* Quick metrics */}
         <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
           <div className="rounded-[1.4rem] border border-white/10 bg-white/[0.04] p-5">
@@ -42,7 +100,7 @@ export default async function Home() {
         <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
           <Link
             href="/scan-wizard"
-            className="group rounded-[1.6rem] border border-[var(--accent-cyan)]/30 bg-[linear-gradient(180deg,rgba(158,193,182,0.08),rgba(255,255,255,0.02))] p-6 transition hover:border-[var(--accent-cyan)]/50 hover:shadow-[0_20px_50px_rgba(158,193,182,0.08)]"
+            className={scanWizardClasses}
           >
             <p className="font-[family:var(--font-plex-mono)] text-[0.62rem] font-medium uppercase tracking-[0.24em] text-[var(--accent-cyan)]">Start here</p>
             <h2 className="mt-2 text-xl font-semibold text-white">Scan Wizard</h2>
@@ -52,7 +110,7 @@ export default async function Home() {
 
           <Link
             href="/graph"
-            className="group rounded-[1.6rem] border border-white/10 bg-white/[0.04] p-6 transition hover:border-white/18 hover:shadow-[0_20px_50px_rgba(0,0,0,0.12)]"
+            className={otherOptionsClasses}
           >
             <p className="font-[family:var(--font-plex-mono)] text-[0.62rem] font-medium uppercase tracking-[0.24em] text-[var(--accent-cyan)]">Visualize</p>
             <h2 className="mt-2 text-xl font-semibold text-white">IAM Graph</h2>
@@ -62,7 +120,7 @@ export default async function Home() {
 
           <Link
             href="/findings"
-            className="group rounded-[1.6rem] border border-white/10 bg-white/[0.04] p-6 transition hover:border-white/18 hover:shadow-[0_20px_50px_rgba(0,0,0,0.12)]"
+            className={otherOptionsClasses}
           >
             <p className="font-[family:var(--font-plex-mono)] text-[0.62rem] font-medium uppercase tracking-[0.24em] text-[var(--accent-magenta)]">Detect</p>
             <h2 className="mt-2 text-xl font-semibold text-white">Findings</h2>
@@ -72,7 +130,7 @@ export default async function Home() {
 
           <Link
             href="/cost-matrix"
-            className="group rounded-[1.6rem] border border-white/10 bg-white/[0.04] p-6 transition hover:border-white/18 hover:shadow-[0_20px_50px_rgba(0,0,0,0.12)]"
+            className={otherOptionsClasses}
           >
             <p className="font-[family:var(--font-plex-mono)] text-[0.62rem] font-medium uppercase tracking-[0.24em] text-[var(--accent-gold)]">Correlate</p>
             <h2 className="mt-2 text-xl font-semibold text-white">Cost Matrix</h2>
@@ -82,7 +140,7 @@ export default async function Home() {
 
           <Link
             href="/reports"
-            className="group rounded-[1.6rem] border border-white/10 bg-white/[0.04] p-6 transition hover:border-white/18 hover:shadow-[0_20px_50px_rgba(0,0,0,0.12)]"
+            className={otherOptionsClasses}
           >
             <p className="font-[family:var(--font-plex-mono)] text-[0.62rem] font-medium uppercase tracking-[0.24em] text-[var(--accent-magenta)]">Export</p>
             <h2 className="mt-2 text-xl font-semibold text-white">Reports</h2>

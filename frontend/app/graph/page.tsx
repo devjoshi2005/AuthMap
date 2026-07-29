@@ -164,7 +164,21 @@ export default function GraphPage() {
   const [stats, setStats] = useState({ nodes: 0, edges: 0, admins: 0 });
   const [noScan, setNoScan] = useState(false);
 
+  const contentRef = useRef<HTMLDivElement>(null);
+
   /* ── Data fetching ─────────────────────────────────── */
+  useEffect(() => {
+    const timer = setTimeout(() => {
+      if (contentRef.current) {
+        const headerOffset = 80;
+        const elementPosition = contentRef.current.getBoundingClientRect().top;
+        const offsetPosition = elementPosition + window.scrollY - headerOffset;
+        window.scrollTo({ top: offsetPosition, behavior: "smooth" });
+      }
+    }, 150);
+    return () => clearTimeout(timer);
+  }, []);
+
   useEffect(() => {
     if (!isLoaded) return;
     async function load() {
@@ -405,7 +419,7 @@ export default function GraphPage() {
 
   return (
     <AppShell>
-      <div className="space-y-6 pb-10">
+      <div className="space-y-6 pb-10" ref={contentRef}>
         <ScreenHeader
           eyebrow="IAM Graph"
           title="Full relationship graph with controls."

@@ -1,7 +1,7 @@
 "use client";
 
 import { useAuth } from "@clerk/nextjs";
-import { useEffect, useState } from "react";
+import { useEffect, useState, useRef } from "react";
 import { AppShell } from "@/components/app-shell";
 import { ScreenHeader } from "@/components/screen-header";
 import { ClipboardList, ShieldAlert } from "lucide-react";
@@ -43,6 +43,20 @@ export default function ReportsPage() {
   const [loading, setLoading] = useState(true);
   const [downloading, setDownloading] = useState<string | null>(null);
   const [error, setError] = useState("");
+
+  const contentRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    const timer = setTimeout(() => {
+      if (contentRef.current) {
+        const headerOffset = 80;
+        const elementPosition = contentRef.current.getBoundingClientRect().top;
+        const offsetPosition = elementPosition + window.scrollY - headerOffset;
+        window.scrollTo({ top: offsetPosition, behavior: "smooth" });
+      }
+    }, 150);
+    return () => clearTimeout(timer);
+  }, []);
 
   useEffect(() => {
     if (!isLoaded) return;
@@ -96,7 +110,7 @@ export default function ReportsPage() {
 
   return (
     <AppShell>
-      <div className="space-y-8 pb-10">
+      <div className="space-y-8 pb-10" ref={contentRef}>
         <ScreenHeader
           eyebrow="Reports"
           title="Enterprise Compliance & Remediation."
