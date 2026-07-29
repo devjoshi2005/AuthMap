@@ -615,7 +615,7 @@ aws iam update-assume-role-policy \\
 - intern@company.com has not logged in for 90 days. 
 - **Action:** Deactivate access keys immediately. If no business justification exists 
   within 7 days, delete the user.
-```
+
 
 ### 9.4 Performance
 
@@ -630,72 +630,11 @@ aws iam update-assume-role-policy \\
 
 ---
 
-## 10. Output Format
 
-### 10.1 `findings.txt` Structure
 
-```
-================================================================================
-AUTHMAP SECURITY AUDIT REPORT
-Account: 123456789012 (AWS us-east-1)
-Scan ID: aws-123456789012-20260728120000
-Generated: 2026-07-28T12:05:33Z
-Engine: SGTC v1.0 + Hybrid ML (Node2Vec + LOF)
-================================================================================
+## 10. Performance Benchmarks
 
-[CRITICAL FINDINGS — 3]
---------------------------------------------------------------------------------
-1. [CRITICAL | Score: 91/100] Wildcard Trust Policy on AdminRole
-   Path: Role:AdminRole → Principal: *
-   Impact: Any AWS account (including attacker-controlled) can assume this role
-   Blast Radius: Full account compromise possible
-   Remediation: [See AI-generated fix below]
-   
-   [AI REMEDIATION]
-   Step 1: Replace wildcard Principal with specific ARNs
-   Step 2: Add ExternalId condition
-   Step 3: Enable MFA requirement
-   [Terraform code + CLI commands + Console steps]
-
-2. [CRITICAL | Score: 87/100] Overprivileged Service Account
-   Path: SA:backup-sa@project.iam.gserviceaccount.com → Role: roles/editor
-   Impact: Backup service account has full project edit access
-   Blast Radius: Data exfiltration, resource deletion
-   ...
-
-[HIGH FINDINGS — 7]
---------------------------------------------------------------------------------
-4. [HIGH | Score: 74/100] Multi-Hop Privilege Escalation
-   Path: user:intern → group:developers → role:DevOpsRole → policy:PowerUserAccess
-   Hops: 3
-   LOF Anomaly: 2.3 (strong outlier)
-   ...
-
-[STATIC COMPLIANCE VIOLATIONS — 12]
---------------------------------------------------------------------------------
-CIS 1.4 — Root account has active access keys
-CIS 1.10 — Password policy does not require MFA
-CIS 1.12 — Access keys older than 90 days not rotated
-...
-
-[STATISTICS]
-Total Entities Scanned: 247
-Total Attack Paths Discovered: 34
-Critical Paths: 3
-High Paths: 7
-Medium Paths: 12
-Low Paths: 8
-Info: 4
-Average Risk Score: 52.3
-Remediation Actions Generated: 34
-Estimated Time to Fix All Critical: 4.5 hours
-```
-
----
-
-## 11. Performance Benchmarks
-
-### 11.1 Scan Performance
+### 10.1 Scan Performance
 
 | Account Size | Entities | Scan Time | Neo4j Import | SGTC Analysis | Total |
 |--------------|----------|-----------|--------------|---------------|-------|
@@ -703,7 +642,7 @@ Estimated Time to Fix All Critical: 4.5 hours
 | Medium (~200 users) | 600 | 35s | 4s | 18s | **57s** |
 | Large (~1000 users) | 3,000 | 120s | 12s | 65s | **197s** |
 
-### 11.2 Accuracy Validation
+### 10.2 Accuracy Validation
 
 | Test | Method | Result |
 |------|--------|--------|
@@ -714,9 +653,9 @@ Estimated Time to Fix All Critical: 4.5 hours
 
 ---
 
-## 12. Security & Privacy
+## 11. Security & Privacy
 
-### 12.1 Data Handling
+### 11.1 Data Handling
 
 | Aspect | Policy |
 |--------|--------|
@@ -726,7 +665,7 @@ Estimated Time to Fix All Critical: 4.5 hours
 | **Network** | All API calls over TLS 1.3. No data leaves AWS/GCP regions. |
 | **LLM Data** | Only anonymized finding context sent to Groq. No credentials, no resource names. |
 
-### 12.2 Threat Model
+### 11.2 Threat Model
 
 | Threat | Mitigation |
 |--------|------------|
@@ -737,9 +676,9 @@ Estimated Time to Fix All Critical: 4.5 hours
 
 ---
 
-## 13. Deployment
+## 12. Deployment
 
-### 13.1 Architecture Diagram
+### 12.1 Architecture Diagram
 
 ```mermaid
 flowchart TB
@@ -782,7 +721,7 @@ flowchart TB
     G --> I
 ```
 
-### 13.2 Tech Stack
+### 12.2 Tech Stack
 
 | Layer | Technology | Purpose |
 |-------|-----------|---------|
@@ -798,20 +737,7 @@ flowchart TB
 
 ---
 
-## 14. Future Roadmap
-
-| Quarter | Feature | Impact |
-|---------|---------|--------|
-| **Q3 2026** | Azure IAM support (Microsoft Graph API) | Multi-cloud parity |
-| **Q3 2026** | Real-time monitoring (CloudTrail → Kafka → Neo4j) | Continuous attack path detection |
-| **Q4 2026** | Auto-remediation (Temporal.io workflows) | Human-in-the-loop approval → automated fix |
-| **Q4 2026** | Compliance reporting (SOC 2, ISO 27001 mappers) | Enterprise sales enablement |
-| **Q1 2027** | RBAC simulation ("what-if" policy changes) | Proactive security planning |
-| **Q1 2027** | Threat intelligence integration (Mitre ATT&CK mapping) | Contextual risk scoring |
-
----
-
-## 15. Data Sources & References
+## 13. Data Sources & References
 
 ### Academic & Technical
 
@@ -851,7 +777,7 @@ flowchart TB
 
 ---
 
-## 16. License
+## 14. License
 
 AuthMap is released under the **MIT License**.
 
