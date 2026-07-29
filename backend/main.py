@@ -10,7 +10,7 @@ from typing import Optional, List, Dict, Any
 from fastapi import FastAPI, HTTPException, Depends, BackgroundTasks, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
-from pydantic import BaseModel
+from pydantic import BaseModel, Field, field_validator
 from dotenv import load_dotenv
 import httpx
 import jwt
@@ -99,36 +99,60 @@ async def get_clerk_user_id(request: Request) -> str:
 class ScanRequest(BaseModel):
     provider: str  
     # AWS Cross-Account Role
-    aws_role_arn: Optional[str] = None
-    aws_external_id: Optional[str] = None
+    aws_role_arn: Optional[str] = Field(None, pattern=r"^arn:aws:iam::\d{12}:role/[\w+=,.@-]+$", max_length=2048)
+    aws_external_id: Optional[str] = Field(None, pattern=r"^[\w+=,.@:-]+$", max_length=1224)
     # GCP: Service Account JSON
-    gcp_sa_json: Optional[str] = None
-    gcp_project_id: Optional[str] = None
+    gcp_sa_json: Optional[str] = Field(None, max_length=10000)
+    gcp_project_id: Optional[str] = Field(None, pattern=r"^[a-z][a-z0-9-]{4,28}[a-z0-9]$", max_length=30)
     
-    region: Optional[str] = 'us-east-1'
-    scan_type: Optional[str] = 'full'
+    region: Optional[str] = Field('us-east-1', max_length=50)
+    scan_type: Optional[str] = Field('full', max_length=50)
     selected_compliances: Optional[List[str]] = ['SOC2', 'DPDP']
-    cost_region: Optional[str] = 'INDIA'  
+    cost_region: Optional[str] = Field('INDIA', max_length=50)  
     annual_revenue: Optional[float] = None
     
     # These are now ignored/overwritten by the backend Aura automation, kept for backwards compatibility
-    neo4j_uri: Optional[str] = None
-    neo4j_username: Optional[str] = None
-    neo4j_password: Optional[str] = None
-    neo4j_project_id: Optional[str] = None
-    account_name: Optional[str] = "Operator"
+    neo4j_uri: Optional[str] = Field(None, pattern=r"^(neo4j|bolt|neo4j\+s|bolt\+s)://[a-zA-Z0-9.-]+(:\d+)?$", max_length=255)
+    neo4j_username: Optional[str] = Field(None, pattern=r"^[a-zA-Z0-9_.-]+$", max_length=255)
+    neo4j_password: Optional[str] = Field(None, max_length=255)
+    neo4j_project_id: Optional[str] = Field(None, max_length=255)
+    account_name: Optional[str] = Field("Operator", max_length=255)
+
+    @field_validator('gcp_sa_json')
+    def validate_gcp_json(cls, v):
+        if v is None:
+            return v
+        try:
+            parsed = json.loads(v)
+            if not isinstance(parsed, dict) or "type" not in parsed:
+                raise ValueError("Must be a valid GCP Service Account JSON object")
+            return v
+        except Exception:
+            raise ValueError("Invalid JSON payload")
 
 
 class ScanRequestVerify(BaseModel):
     provider: str
-    aws_role_arn: Optional[str] = None
-    aws_external_id: Optional[str] = None
-    gcp_sa_json: Optional[str] = None
-    gcp_project_id: Optional[str] = None
-    region: Optional[str] = 'us-east-1'
-    neo4j_uri: Optional[str] = None
-    neo4j_username: Optional[str] = None
-    neo4j_password: Optional[str] = None
+    aws_role_arn: Optional[str] = Field(None, pattern=r"^arn:aws:iam::\d{12}:role/[\w+=,.@-]+$", max_length=2048)
+    aws_external_id: Optional[str] = Field(None, pattern=r"^[\w+=,.@:-]+$", max_length=1224)
+    gcp_sa_json: Optional[str] = Field(None, max_length=10000)
+    gcp_project_id: Optional[str] = Field(None, pattern=r"^[a-z][a-z0-9-]{4,28}[a-z0-9]$", max_length=30)
+    region: Optional[str] = Field('us-east-1', max_length=50)
+    neo4j_uri: Optional[str] = Field(None, pattern=r"^(neo4j|bolt|neo4j\+s|bolt\+s)://[a-zA-Z0-9.-]+(:\d+)?$", max_length=255)
+    neo4j_username: Optional[str] = Field(None, pattern=r"^[a-zA-Z0-9_.-]+$", max_length=255)
+    neo4j_password: Optional[str] = Field(None, max_length=255)
+
+    @field_validator('gcp_sa_json')
+    def validate_gcp_json(cls, v):
+        if v is None:
+            return v
+        try:
+            parsed = json.loads(v)
+            if not isinstance(parsed, dict) or "type" not in parsed:
+                raise ValueError("Must be a valid GCP Service Account JSON object")
+            return v
+        except Exception:
+            raise ValueError("Invalid JSON payload")
 
 
 app = FastAPI(

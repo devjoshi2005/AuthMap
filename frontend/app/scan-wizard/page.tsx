@@ -221,12 +221,39 @@ export default function ScanWizardPage() {
 
   async function goNext() {
     if (step === "credentials") {
-      if (provider === "aws" && !awsRoleArn.trim().startsWith("arn:aws:iam::")) {
-        // Light format check — but don't block since ARN format varies
+      setVerifyError(null);
+      
+      // Strict regex definitions for input validation
+      const awsArnRegex = /^arn:aws:iam::\d{12}:role\/[\w+=,.@-]+$/;
+      const awsExternalIdRegex = /^[\w+=,.@:-]+$/;
+      const gcpProjectIdRegex = /^[a-z][a-z0-9-]{4,28}[a-z0-9]$/;
+
+      if (provider === "aws") {
+        if (!awsArnRegex.test(awsRoleArn.trim())) {
+          setVerifyError("Invalid AWS Role ARN format detected. Please check for special characters or invalid format.");
+          return;
+        }
+        if (awsExternalId && !awsExternalIdRegex.test(awsExternalId)) {
+          setVerifyError("Invalid AWS External ID format. Only alphanumeric characters and +=,.@:- are allowed.");
+          return;
+        }
+      }
+
+      if (provider === "gcp") {
+        if (!gcpProjectIdRegex.test(gcpProjectId.trim())) {
+          setVerifyError("Invalid GCP Project ID format.");
+          return;
+        }
+        try {
+          const parsed = JSON.parse(gcpSaJson);
+          if (!parsed.type) throw new Error();
+        } catch {
+          setVerifyError("GCP Service Account Key must be a valid JSON object.");
+          return;
+        }
       }
 
       setIsVerifying(true);
-      setVerifyError(null);
       try {
         const token = await getToken();
         const backendUrl = process.env.NEXT_PUBLIC_BACKEND_URL || "http://localhost:8000";
@@ -349,6 +376,20 @@ export default function ScanWizardPage() {
     setLaunchResult(null);
     setScanStatus(null);
     try {
+      const neo4jUriRegex = /^(neo4j|bolt|neo4j\+s|bolt\+s):\/\/[a-zA-Z0-9.-]+(:\d+)?$/;
+      const neo4jUserRegex = /^[a-zA-Z0-9_.-]+$/;
+
+      if (!neo4jUriRegex.test(neo4jUri.trim())) {
+        setLaunchResult("Invalid Neo4j URI format. Must start with neo4j:// or bolt:// and contain a valid host.");
+        setIsLaunching(false);
+        return;
+      }
+      if (!neo4jUserRegex.test(neo4jUser.trim())) {
+        setLaunchResult("Invalid Neo4j Username format. Only alphanumeric and _.- characters are allowed.");
+        setIsLaunching(false);
+        return;
+      }
+
       const token = await getToken();
 
 
