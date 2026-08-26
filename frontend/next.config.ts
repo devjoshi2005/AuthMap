@@ -26,6 +26,50 @@ const nextConfig: NextConfig = {
 			},
 		];
 	},
+	async headers() {
+		const cspDirectives = [
+			"default-src 'self' https://*.clerk.accounts.dev https://clerk.com",
+			"script-src 'self' 'unsafe-eval' 'unsafe-inline' 'wasm-unsafe-eval' https://*.clerk.accounts.dev https://clerk.com https://challenges.cloudflare.com https://cdn.jsdelivr.net https://cdnjs.cloudflare.com",
+			"worker-src 'self' blob:",
+			"connect-src 'self' http://localhost:* http://127.0.0.1:* ws://localhost:* ws://127.0.0.1:* https://*.run.app https://authmap-backend-416290518702.us-central1.run.app https://*.clerk.accounts.dev https://clerk.com https://challenges.cloudflare.com https://*.supabase.co https://api.groq.com https://huggingface.co https://*.huggingface.co https://cdn-lfs.huggingface.co https://raw.githubusercontent.com https://*.xenova.com https://cdn.jsdelivr.net https://cdnjs.cloudflare.com",
+			"img-src 'self' data: blob: https://img.clerk.com https://images.unsplash.com",
+			"style-src 'self' 'unsafe-inline' https://cdn.jsdelivr.net https://cdnjs.cloudflare.com",
+			"font-src 'self' data: https://cdn.jsdelivr.net",
+			"object-src 'none'",
+			"frame-src 'self' https://challenges.cloudflare.com https://*.clerk.accounts.dev https://clerk.com",
+			"frame-ancestors 'none'",
+			"base-uri 'self'",
+			"form-action 'self'",
+		].join("; ");
+
+		return [
+			{
+				source: "/:path*",
+				headers: [
+					{
+						key: "Content-Security-Policy",
+						value: cspDirectives,
+					},
+					{
+						key: "X-Frame-Options",
+						value: "DENY",
+					},
+					{
+						key: "X-Content-Type-Options",
+						value: "nosniff",
+					},
+					{
+						key: "Referrer-Policy",
+						value: "strict-origin-when-cross-origin",
+					},
+					{
+						key: "Permissions-Policy",
+						value: "camera=(), microphone=(), geolocation=()",
+					},
+				],
+			},
+		];
+	},
 	experimental: {
 		serverActions: {
 			allowedOrigins: forwardedOrigins,

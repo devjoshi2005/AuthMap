@@ -112,10 +112,7 @@ export default function FindingsPage() {
   useEffect(() => {
     const timer = setTimeout(() => {
       if (contentRef.current) {
-        const headerOffset = 80;
-        const elementPosition = contentRef.current.getBoundingClientRect().top;
-        const offsetPosition = elementPosition + window.scrollY - headerOffset;
-        window.scrollTo({ top: offsetPosition, behavior: "smooth" });
+        contentRef.current.scrollIntoView({ behavior: "smooth", block: "start" });
       }
     }, 150);
     return () => clearTimeout(timer);
@@ -129,7 +126,7 @@ export default function FindingsPage() {
         const token = await getToken();
         if (!token) return; // Prevent 401
         const headers = { Authorization: `Bearer ${token}` };
-        const backendUrl = process.env.NEXT_PUBLIC_BACKEND_URL || "http://localhost:8000";
+        const backendUrl = process.env.NODE_ENV === "development" ? "http://localhost:8000" : process.env.NEXT_PUBLIC_BACKEND_URL;
 
         const res = await fetch(`${backendUrl}/scan/results/latest`, { headers });
         if (res.ok) {
@@ -166,7 +163,7 @@ export default function FindingsPage() {
     setDownloading(true);
     try {
       const token = await getToken();
-      const backendUrl = process.env.NEXT_PUBLIC_BACKEND_URL || "http://localhost:8000";
+      const backendUrl = process.env.NODE_ENV === "development" ? "http://localhost:8000" : process.env.NEXT_PUBLIC_BACKEND_URL;
       const res = await fetch(
         `${backendUrl}/scan/download/${latestScan.id}/findings`,
         { headers: { Authorization: `Bearer ${token}` } }

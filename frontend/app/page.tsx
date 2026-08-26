@@ -19,7 +19,18 @@ export default function Home() {
       try {
         const token = await getToken();
         if (!token) return;
-        const backendUrl = process.env.NEXT_PUBLIC_BACKEND_URL || "http://localhost:8000";
+        const backendUrl = process.env.NODE_ENV === "development" ? "http://localhost:8000" : process.env.NEXT_PUBLIC_BACKEND_URL;
+        
+        // Fire-and-forget Neo4j warmup request to reduce AI cold starts
+        fetch(`${backendUrl}/neo4j/warmup`, {
+          method: "POST",
+          headers: { 
+            "Authorization": `Bearer ${token}`,
+            "Content-Type": "application/json"
+          },
+          body: JSON.stringify({})
+        }).catch(() => {});
+        
         const res = await fetch(`${backendUrl}/scan/results/latest`, {
           headers: { Authorization: `Bearer ${token}` },
         });
@@ -41,10 +52,7 @@ export default function Home() {
     if (isLoaded && userId) {
       const timer = setTimeout(() => {
         if (contentRef.current) {
-          const headerOffset = 80;
-          const elementPosition = contentRef.current.getBoundingClientRect().top;
-          const offsetPosition = elementPosition + window.scrollY - headerOffset;
-          window.scrollTo({ top: offsetPosition, behavior: "smooth" });
+          contentRef.current.scrollIntoView({ behavior: "smooth", block: "start" });
         }
       }, 150);
       return () => clearTimeout(timer);

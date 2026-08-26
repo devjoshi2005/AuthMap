@@ -70,10 +70,7 @@ export default function CostMatrixPage() {
   useEffect(() => {
     const timer = setTimeout(() => {
       if (contentRef.current) {
-        const headerOffset = 80;
-        const elementPosition = contentRef.current.getBoundingClientRect().top;
-        const offsetPosition = elementPosition + window.scrollY - headerOffset;
-        window.scrollTo({ top: offsetPosition, behavior: "smooth" });
+        contentRef.current.scrollIntoView({ behavior: "smooth", block: "start" });
       }
     }, 150);
     return () => clearTimeout(timer);
@@ -86,7 +83,7 @@ export default function CostMatrixPage() {
         const token = await getToken();
         if (!token) return; // Prevent 401
         const headers = { Authorization: `Bearer ${token}` };
-        const backendUrl = process.env.NEXT_PUBLIC_BACKEND_URL || "http://localhost:8000";
+        const backendUrl = process.env.NODE_ENV === "development" ? "http://localhost:8000" : process.env.NEXT_PUBLIC_BACKEND_URL;
 
         const scanRes = await fetch(`${backendUrl}/scan/results/latest`, { headers });
         if (!scanRes.ok) {

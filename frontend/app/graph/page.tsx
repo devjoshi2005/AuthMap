@@ -12,6 +12,7 @@ if (typeof window !== "undefined" && !cytoscape.use.name.includes("fcose")) {
 }
 import { AppShell } from "@/components/app-shell";
 import { ScreenHeader } from "@/components/screen-header";
+import { AIWidget } from "@/components/ai-widget";
 import { Network } from "lucide-react";
 
 /* ── Types ─────────────────────────────────────────────── */
@@ -170,10 +171,7 @@ export default function GraphPage() {
   useEffect(() => {
     const timer = setTimeout(() => {
       if (contentRef.current) {
-        const headerOffset = 80;
-        const elementPosition = contentRef.current.getBoundingClientRect().top;
-        const offsetPosition = elementPosition + window.scrollY - headerOffset;
-        window.scrollTo({ top: offsetPosition, behavior: "smooth" });
+        contentRef.current.scrollIntoView({ behavior: "smooth", block: "start" });
       }
     }, 150);
     return () => clearTimeout(timer);
@@ -186,7 +184,7 @@ export default function GraphPage() {
         const token = await getToken();
         if (!token) return;
         const headers = { Authorization: `Bearer ${token}` };
-        const backendUrl = process.env.NEXT_PUBLIC_BACKEND_URL || "http://localhost:8000";
+        const backendUrl = process.env.NODE_ENV === "development" ? "http://localhost:8000" : process.env.NEXT_PUBLIC_BACKEND_URL;
 
         const scanRes = await fetch(`${backendUrl}/scan/results/latest`, { headers });
         if (!scanRes.ok) {
@@ -197,20 +195,22 @@ export default function GraphPage() {
         const scan = await scanRes.json();
         const scanId = scan.id ?? scan.scan_id;
 
-        const saved = sessionStorage.getItem('boxai_scan_creds');
-        let neo4jHeaders: Record<string, string> = {};
+        const saved = localStorage.getItem('boxai_scan_creds');
+        let neo4jCreds: any = {};
         if (saved) {
           try {
             const data = JSON.parse(saved);
-            if (data.neo4jUri) neo4jHeaders['x-neo4j-uri'] = data.neo4jUri;
-            if (data.neo4jUsername) neo4jHeaders['x-neo4j-user'] = data.neo4jUsername;
-            if (data.neo4jPassword) neo4jHeaders['x-neo4j-password'] = data.neo4jPassword;
+            if (data.neo4jUri) neo4jCreds.neo4j_uri = data.neo4jUri;
+            if (data.neo4jUser) neo4jCreds.neo4j_username = data.neo4jUser;
+            if (data.neo4jPassword) neo4jCreds.neo4j_password = data.neo4jPassword;
           } catch (e) {}
         }
 
         const [graphRes, pathsRes] = await Promise.all([
           fetch(`${backendUrl}/scan/graph/${scanId}`, { 
-            headers: { ...headers, ...neo4jHeaders } 
+            method: "POST",
+            headers: { ...headers, "Content-Type": "application/json" },
+            body: JSON.stringify(neo4jCreds)
           }),
           fetch(`${backendUrl}/scan/attack-paths/${scanId}`, { headers }),
         ]);
@@ -523,11 +523,11 @@ export default function GraphPage() {
                 style={{ width: "100%", height: "calc(100vh - 280px)", minHeight: "600px" }}
               />
 
-              <div className="absolute bottom-6 right-6 flex flex-col gap-3 z-50">
+              <div className="absolute bottom-6 left-6 flex flex-col gap-2 z-40">
                 <button
                   type="button"
                   onClick={handleZoomIn}
-                  className="flex h-12 w-12 items-center justify-center rounded-full border border-white/20 bg-[#2a303c] shadow-lg shadow-black/50 text-2xl font-bold text-white transition hover:bg-[#3b4354] hover:border-white/40"
+                  className="flex h-10 w-10 items-center justify-center rounded-xl border border-white/15 bg-[#12161f]/80 backdrop-blur-md shadow-lg text-lg font-bold text-white transition hover:bg-[#1a202c] hover:border-white/30"
                   aria-label="Zoom In"
                 >
                   +
@@ -535,7 +535,7 @@ export default function GraphPage() {
                 <button
                   type="button"
                   onClick={handleZoomOut}
-                  className="flex h-12 w-12 items-center justify-center rounded-full border border-white/20 bg-[#2a303c] shadow-lg shadow-black/50 text-2xl font-bold text-white transition hover:bg-[#3b4354] hover:border-white/40"
+                  className="flex h-10 w-10 items-center justify-center rounded-xl border border-white/15 bg-[#12161f]/80 backdrop-blur-md shadow-lg text-lg font-bold text-white transition hover:bg-[#1a202c] hover:border-white/30"
                   aria-label="Zoom Out"
                 >
                   −
@@ -615,6 +615,7 @@ export default function GraphPage() {
           </>
         )}
       </div>
+      <AIWidget />
     </AppShell>
   );
 }

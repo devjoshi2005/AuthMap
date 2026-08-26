@@ -140,10 +140,7 @@ export default function ScanWizardPage() {
   useEffect(() => {
     const timer = setTimeout(() => {
       if (contentRef.current) {
-        const headerOffset = 80;
-        const elementPosition = contentRef.current.getBoundingClientRect().top;
-        const offsetPosition = elementPosition + window.scrollY - headerOffset;
-        window.scrollTo({ top: offsetPosition, behavior: "smooth" });
+        contentRef.current.scrollIntoView({ behavior: "smooth", block: "start" });
       }
     }, 150);
     return () => clearTimeout(timer);
@@ -152,7 +149,7 @@ export default function ScanWizardPage() {
 
   // Hydrate from sessionStorage
   useEffect(() => {
-    const saved = sessionStorage.getItem('boxai_scan_creds');
+    const saved = localStorage.getItem('boxai_scan_creds');
     if (saved) {
       try {
         const data = JSON.parse(saved);
@@ -164,9 +161,7 @@ export default function ScanWizardPage() {
         if (data.costRegion) setCostRegion(data.costRegion);
         if (data.annualRevenue) setAnnualRevenue(data.annualRevenue);
         if (data.compliances) setCompliances(data.compliances);
-        if (data.neo4jUri) setNeo4jUri(data.neo4jUri);
-        if (data.neo4jUser) setNeo4jUser(data.neo4jUser);
-        if (data.neo4jPassword) setNeo4jPassword(data.neo4jPassword);
+        // Neo4j credentials intentionally not hydrated here per user request to start empty
       } catch (e) {}
     }
   }, []);
@@ -177,7 +172,7 @@ export default function ScanWizardPage() {
       provider, awsAccountId, awsRoleArn, awsRegion, gcpProjectId,
       costRegion, annualRevenue, compliances, neo4jUri, neo4jUser, neo4jPassword
     };
-    sessionStorage.setItem('boxai_scan_creds', JSON.stringify(creds));
+    localStorage.setItem('boxai_scan_creds', JSON.stringify(creds));
   }, [provider, awsAccountId, awsRoleArn, awsRegion, gcpProjectId, costRegion, annualRevenue, compliances, neo4jUri, neo4jUser, neo4jPassword]);
 
   const startPolling = useCallback(
@@ -186,7 +181,9 @@ export default function ScanWizardPage() {
       const poll = async () => {
         try {
           const token = await getToken();
-          const backendUrl = process.env.NEXT_PUBLIC_BACKEND_URL || "http://localhost:8000";
+          if (!token) return; // Wait until token is available to avoid 401 Unauthorized errors
+          
+          const backendUrl = process.env.NODE_ENV === "development" ? "http://localhost:8000" : process.env.NEXT_PUBLIC_BACKEND_URL;
           const res = await fetch(`${backendUrl}/scan/status/${scanId}`, {
             headers: { Authorization: `Bearer ${token}` },
           });
@@ -199,7 +196,35 @@ export default function ScanWizardPage() {
               phase: data.phase || prev?.phase,
               error: data.error || undefined,
             }));
-            if (data.status === "completed" || data.status === "failed") {
+            
+            if (data.status === "completed") {
+              if (pollingRef.current) clearInterval(pollingRef.current);
+              setIsPolling(false);
+              
+              // ── Client-Side RAG Ingestion ──
+              try {
+                const findingsRes = await fetch(`${backendUrl}/scan/findings/${scanId}`, {
+                  headers: { Authorization: `Bearer ${token}` }
+                });
+                if (findingsRes.ok) {
+                  const findingsData = await findingsRes.json();
+                  const findingsList = Array.isArray(findingsData) ? findingsData : findingsData.findings || [];
+                  const { clientRAGEngine } = await import("@/lib/rag/client-rag-engine");
+                  
+                  // Retrieve provider from config
+                  let scanCloud = "unknown";
+                  try {
+                    const cfg = sessionStorage.getItem("boxai_scan_config");
+                    if (cfg) scanCloud = JSON.parse(cfg).provider || "unknown";
+                  } catch (e) {}
+                  
+                  await clientRAGEngine.ingestScanTelemetry(String(scanId), scanCloud, findingsList);
+                }
+              } catch (ragErr) {
+                console.error("Failed to ingest scan into Client RAG", ragErr);
+              }
+
+            } else if (data.status === "failed") {
               if (pollingRef.current) clearInterval(pollingRef.current);
               setIsPolling(false);
             }
@@ -270,7 +295,7 @@ export default function ScanWizardPage() {
       setIsVerifying(true);
       try {
         const token = await getToken();
-        const backendUrl = process.env.NEXT_PUBLIC_BACKEND_URL || "http://localhost:8000";
+        const backendUrl = process.env.NODE_ENV === "development" ? "http://localhost:8000" : process.env.NEXT_PUBLIC_BACKEND_URL;
         const body = provider === "aws"
           ? { provider: "aws", aws_role_arn: awsRoleArn.trim(), aws_external_id: awsExternalId, region: awsRegion }
           : { provider: "gcp", gcp_sa_json: gcpSaJson, gcp_project_id: gcpProjectId.trim() };
@@ -280,14 +305,21 @@ export default function ScanWizardPage() {
           headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
           body: JSON.stringify(body)
         });
-        const data = await res.json();
+        const data = await res.json().catch(() => ({}));
+        if (!res.ok) {
+          const detail = data?.detail || (typeof data === "string" ? data : `Backend returned status ${res.status}`);
+          setVerifyError(typeof detail === "string" ? detail : JSON.stringify(detail));
+          setIsVerifying(false);
+          return;
+        }
         if (!data.valid && data.error) {
           setVerifyError(data.error || "Connection test failed.");
           setIsVerifying(false);
           return;
         }
-      } catch (e) {
-        setVerifyError("Could not reach backend to verify credentials.");
+      } catch (e: any) {
+        console.error("Verification error:", e);
+        setVerifyError(e?.message ? `Connection failed: ${e.message}` : "Could not reach backend to verify credentials.");
         setIsVerifying(false);
         return;
       }
@@ -299,7 +331,7 @@ export default function ScanWizardPage() {
       setVerifyError(null);
       try {
         const token = await getToken();
-        const backendUrl = process.env.NEXT_PUBLIC_BACKEND_URL || "http://localhost:8000";
+        const backendUrl = process.env.NODE_ENV === "development" ? "http://localhost:8000" : process.env.NEXT_PUBLIC_BACKEND_URL;
         const body = { provider: "none", neo4j_uri: neo4jUri.trim(), neo4j_username: neo4jUser.trim(), neo4j_password: neo4jPassword };
           
         const res = await fetch(`${backendUrl}/scan/verify-credentials`, {
@@ -307,14 +339,21 @@ export default function ScanWizardPage() {
           headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
           body: JSON.stringify(body)
         });
-        const data = await res.json();
+        const data = await res.json().catch(() => ({}));
+        if (!res.ok) {
+          const detail = data?.detail || (typeof data === "string" ? data : `Backend returned status ${res.status}`);
+          setVerifyError(typeof detail === "string" ? detail : JSON.stringify(detail));
+          setIsVerifying(false);
+          return;
+        }
         if (!data.valid && data.error) {
           setVerifyError(data.error || "Neo4j Connection test failed.");
           setIsVerifying(false);
           return;
         }
-      } catch (e) {
-        setVerifyError("Could not reach backend to verify Neo4j credentials.");
+      } catch (e: any) {
+        console.error("Neo4j verification error:", e);
+        setVerifyError(e?.message ? `Neo4j connection failed: ${e.message}` : "Could not reach backend to verify Neo4j credentials.");
         setIsVerifying(false);
         return;
       }
@@ -335,7 +374,7 @@ export default function ScanWizardPage() {
 
   async function handleAwsDownloadTemplate() {
     try {
-      const backendUrl = process.env.NEXT_PUBLIC_BACKEND_URL || "http://localhost:8000";
+      const backendUrl = process.env.NODE_ENV === "development" ? "http://localhost:8000" : process.env.NEXT_PUBLIC_BACKEND_URL;
       const res = await fetch(`${backendUrl}/aws/cloudformation?external_id=${awsExternalId}&account_id=${awsAccountId}`);
       if (!res.ok) throw new Error(`HTTP ${res.status}: Failed to fetch template`);
       
@@ -424,12 +463,28 @@ export default function ScanWizardPage() {
       if (provider === "aws") {
         payload.aws_role_arn = awsRoleArn;
         payload.aws_external_id = awsExternalId;
+        if (awsAccountId) payload.aws_account_id = awsAccountId;
       } else if (provider === "gcp") {
         payload.gcp_project_id = gcpProjectId;
         payload.gcp_sa_json = gcpSaJson;
       }
 
-      const backendUrl = process.env.NEXT_PUBLIC_BACKEND_URL || "http://localhost:8000";
+      try {
+        const sanitizedConfig = {
+          provider,
+          region: awsRegion,
+          cost_region: costRegion,
+          annual_revenue: parseFloat(annualRevenue) || undefined,
+          selected_compliances: compliances,
+          account_name: accountName,
+          aws_role_arn: awsRoleArn || undefined,
+          aws_account_id: awsAccountId || undefined,
+          gcp_project_id: gcpProjectId || undefined,
+        };
+        sessionStorage.setItem("boxai_scan_config", JSON.stringify(sanitizedConfig));
+      } catch (e) {}
+
+      const backendUrl = process.env.NODE_ENV === "development" ? "http://localhost:8000" : process.env.NEXT_PUBLIC_BACKEND_URL;
       const res = await fetch(`${backendUrl}/scan/run`, {
         method: "POST",
         headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
@@ -439,6 +494,9 @@ export default function ScanWizardPage() {
       if (res.ok) {
         const data = await res.json();
         if (data.scan_id) {
+          try {
+            sessionStorage.setItem("boxai_last_scan_id", String(data.scan_id));
+          } catch (e) {}
           setScanStatus({ scan_id: data.scan_id, status: data.status || "pending", progress: 0 });
           startPolling(data.scan_id);
         } else {
@@ -872,35 +930,37 @@ done`}
                 <h2 className="mt-2 text-2xl font-semibold text-white">Review & launch</h2>
               </div>
               <div className="space-y-3">
-                <div className="flex items-center justify-between rounded-xl border border-white/10 bg-white/[0.03] px-4 py-3">
-                  <span className="text-sm text-slate-400">Provider</span>
-                  <span className="text-sm font-semibold text-white uppercase">{provider}</span>
+                <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-1.5 sm:gap-4 rounded-xl border border-white/10 bg-white/[0.03] px-4 py-3 min-w-0">
+                  <span className="text-xs font-medium text-slate-400 shrink-0">Provider</span>
+                  <span className="text-xs sm:text-sm font-semibold text-white uppercase break-all sm:text-right">{provider}</span>
                 </div>
-                <div className="flex items-center justify-between rounded-xl border border-white/10 bg-white/[0.03] px-4 py-3">
-                  <span className="text-sm text-slate-400">Auth Method</span>
-                  <span className="text-sm font-semibold text-green-400">
+                <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-1.5 sm:gap-4 rounded-xl border border-white/10 bg-white/[0.03] px-4 py-3 min-w-0">
+                  <span className="text-xs font-medium text-slate-400 shrink-0">Auth Method</span>
+                  <span className="text-xs sm:text-sm font-semibold text-green-400 break-words sm:text-right">
                     {provider === "aws" ? "STS Cross-Account Role ✓" : "Google SA Key ✓"}
                   </span>
                 </div>
-                <div className="flex items-center justify-between rounded-xl border border-white/10 bg-white/[0.03] px-4 py-3">
-                  <span className="text-sm text-slate-400">Neo4j</span>
-                  <span className="text-sm font-semibold text-green-400">{neo4jUri + " ✓" || "Localhost"}</span>
+                <div className="flex flex-col sm:flex-row sm:items-start sm:justify-between gap-1.5 sm:gap-4 rounded-xl border border-white/10 bg-white/[0.03] px-4 py-3 min-w-0">
+                  <span className="text-xs font-medium text-slate-400 shrink-0">Neo4j Database</span>
+                  <span className="text-xs sm:text-sm font-semibold text-green-400 break-words sm:text-right">
+                    {neo4jUri ? `${neo4jUri} ✓` : "Localhost"}
+                  </span>
                 </div>
-                <div className="flex items-center justify-between rounded-xl border border-white/10 bg-white/[0.03] px-4 py-3">
-                  <span className="text-sm text-slate-400">Cost Region</span>
-                  <span className="text-sm font-semibold text-white">
+                <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-1.5 sm:gap-4 rounded-xl border border-white/10 bg-white/[0.03] px-4 py-3 min-w-0">
+                  <span className="text-xs font-medium text-slate-400 shrink-0">Cost Region</span>
+                  <span className="text-xs sm:text-sm font-semibold text-white sm:text-right">
                     {COST_REGIONS.find((r) => r.value === costRegion)?.label ?? costRegion}
                   </span>
                 </div>
-                <div className="flex items-center justify-between rounded-xl border border-white/10 bg-white/[0.03] px-4 py-3">
-                  <span className="text-sm text-slate-400">Annual Revenue</span>
-                  <span className="text-sm font-semibold text-white">
-                    {annualRevenue ? `$${parseFloat(annualRevenue).toLocaleString()}` : "Not provided"}
+                <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-1.5 sm:gap-4 rounded-xl border border-white/10 bg-white/[0.03] px-4 py-3 min-w-0">
+                  <span className="text-xs font-medium text-slate-400 shrink-0">Annual Revenue</span>
+                  <span className="text-xs sm:text-sm font-semibold text-white sm:text-right">
+                    {annualRevenue ? `$${parseFloat(annualRevenue).toLocaleString()}` : "$0 (Not provided)"}
                   </span>
                 </div>
-                <div className="flex items-center justify-between rounded-xl border border-white/10 bg-white/[0.03] px-4 py-3">
-                  <span className="text-sm text-slate-400">Compliances</span>
-                  <span className="text-sm font-semibold text-white">
+                <div className="flex flex-col sm:flex-row sm:items-start sm:justify-between gap-1.5 sm:gap-4 rounded-xl border border-white/10 bg-white/[0.03] px-4 py-3 min-w-0">
+                  <span className="text-xs font-medium text-slate-400 shrink-0 pt-0.5">Compliances</span>
+                  <span className="text-xs sm:text-sm font-semibold text-white break-words sm:text-right min-w-0 leading-relaxed">
                     {compliances.length > 0
                       ? compliances.map((c) => COMPLIANCE_FRAMEWORKS.find((f) => f.value === c)?.label ?? c).join(", ")
                       : "None selected"}
@@ -911,11 +971,11 @@ done`}
               {/* Scan progress section */}
               {scanStatus && (
                 <div className="space-y-4 rounded-xl border border-white/10 bg-white/[0.03] p-5">
-                  <div className="flex items-center justify-between">
-                    <p className="font-[family:var(--font-plex-mono)] text-[0.65rem] font-medium uppercase tracking-[0.2em] text-slate-400">
+                  <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-1 min-w-0">
+                    <p className="font-[family:var(--font-plex-mono)] text-[0.65rem] font-medium uppercase tracking-[0.2em] text-slate-400 shrink-0">
                       Scan Progress
                     </p>
-                    <span className="text-xs text-slate-500">ID #{scanStatus.scan_id}</span>
+                    <span className="text-[0.7rem] font-mono text-slate-500 break-all">ID #{scanStatus.scan_id}</span>
                   </div>
 
                   {/* Progress bar */}
@@ -951,26 +1011,41 @@ done`}
 
                   {/* Completion links */}
                   {scanStatus.status === "completed" && (
-                    <div className="space-y-3 border-t border-white/10 pt-4">
+                    <div className="space-y-3.5 border-t border-white/10 pt-4">
                       <p className="text-sm font-medium text-green-400">
                         ✓ Analysis completed successfully
                       </p>
-                      <div className="flex flex-wrap gap-2">
+
+                      {/* Prominent Ask AI (Full Screen) Option */}
+                      <Link
+                        href="/ask"
+                        className="action-box action-box-cyan flex w-full items-center justify-center gap-2 px-4 py-3 text-sm font-semibold text-white shadow-lg shadow-cyan-500/10 hover:shadow-cyan-500/20"
+                      >
+                        <svg className="h-4 w-4 text-[var(--accent-cyan)]" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                          <path d="M12 2a8 8 0 0 0-8 8c0 3.37 2.07 6.27 5 7.46V20a2 2 0 0 0 2 2h2a2 2 0 0 0 2-2v-2.54c2.93-1.19 5-4.09 5-7.46a8 8 0 0 0-8-8z"/>
+                          <line x1="9.5" y1="9" x2="9.51" y2="9"/>
+                          <line x1="14.5" y1="9" x2="14.51" y2="9"/>
+                        </svg>
+                        <span>Ask AuthMap AI (Full Screen) →</span>
+                      </Link>
+
+                      {/* Secondary Exploration Links */}
+                      <div className="grid grid-cols-1 sm:grid-cols-3 gap-2 pt-1">
                         <Link
                           href="/graph"
-                          className="action-box action-box-cyan px-4 py-2 text-xs font-semibold text-white"
+                          className="action-box action-box-ghost flex items-center justify-center px-3.5 py-2.5 text-xs font-medium text-slate-200 hover:text-white"
                         >
                           View Graph →
                         </Link>
                         <Link
                           href="/findings"
-                          className="action-box action-box-magenta px-4 py-2 text-xs font-semibold text-white"
+                          className="action-box action-box-magenta flex items-center justify-center px-3.5 py-2.5 text-xs font-medium text-slate-200 hover:text-white"
                         >
                           View Findings →
                         </Link>
                         <Link
                           href="/cost-matrix"
-                          className="action-box action-box-gold px-4 py-2 text-xs font-semibold text-white"
+                          className="action-box action-box-gold flex items-center justify-center px-3.5 py-2.5 text-xs font-medium text-slate-200 hover:text-white"
                         >
                           Cost Matrix →
                         </Link>
@@ -995,7 +1070,7 @@ done`}
                       setStep("provider");
                     }}
                     disabled={isLaunching}
-                    className="action-box action-box-ghost w-1/3 px-5 py-3.5 text-sm font-semibold uppercase tracking-[0.18em] text-slate-300 disabled:opacity-50"
+                    className="action-box action-box-ghost w-1/3 px-5 py-3.5 disabled:opacity-50 mt-2 text-sm font-semibold text-white"
                   >
                     Rescan
                   </button>
@@ -1003,7 +1078,7 @@ done`}
                     type="button"
                     onClick={handleLaunch}
                     disabled={isLaunching}
-                    className="action-box action-box-cyan flex w-2/3 items-center justify-center gap-2 px-5 py-3.5 text-sm font-semibold uppercase tracking-[0.18em] text-white disabled:opacity-50"
+                    className="action-box action-box-cyan flex w-2/3 items-center justify-center gap-2 px-5 py-3.5 disabled:opacity-50 mt-2 text-sm font-semibold text-white"
                   >
                     {isLaunching && (
                       <svg className="h-4 w-4 animate-spin text-white" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">

@@ -198,7 +198,7 @@ export function ModeWorkspace() {
     setApiKeyStatus("verifying");
     try {
       const token = await getToken();
-      const backendUrl = process.env.NEXT_PUBLIC_BACKEND_URL || "http://localhost:8000";
+      const backendUrl = process.env.NODE_ENV === "development" ? "http://localhost:8000" : process.env.NEXT_PUBLIC_BACKEND_URL;
       const res = await fetch(`${backendUrl}/keys/verify`, {
         method: "POST",
         headers: {
@@ -234,7 +234,7 @@ export function ModeWorkspace() {
     setIsScanning(true);
     try {
       const token = await getToken();
-      const backendUrl = process.env.NEXT_PUBLIC_BACKEND_URL || "http://localhost:8000";
+      const backendUrl = process.env.NODE_ENV === "development" ? "http://localhost:8000" : process.env.NEXT_PUBLIC_BACKEND_URL;
       const res = await fetch(`${backendUrl}/scan/run`, {
         method: "POST",
         headers: {

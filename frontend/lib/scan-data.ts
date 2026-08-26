@@ -32,6 +32,7 @@ export const navigationItems = [
   { href: "/findings", label: "Findings" },
   { href: "/cost-matrix", label: "Cost Matrix" },
   { href: "/reports", label: "Reports" },
+  { href: "/ask", label: "AI Consultant" },
 ];
 
 export const scanModes: ScanMode[] = [

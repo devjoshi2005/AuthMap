@@ -15,7 +15,8 @@ export default function SignInPage() {
         path="/sign-in"
         routing="path"
         signUpUrl="/sign-up"
-        fallbackRedirectUrl="/"
+        fallbackRedirectUrl="/scan-wizard"
+        forceRedirectUrl="/scan-wizard"
         appearance={clerkAppearance}
       />
     </AuthPageShell>
