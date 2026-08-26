@@ -3,7 +3,6 @@ from typing import List, Dict, Any
 import textwrap
 from io import BytesIO
 from jinja2 import Environment, FileSystemLoader, BaseLoader, select_autoescape
-from weasyprint import HTML, CSS
 from datetime import datetime
 from groq import AsyncGroq
 from collectors.breach_cost_estimator import ComplianceFramework
@@ -68,57 +67,107 @@ class ComplianceMapper:
                 ComplianceFramework.IT_ACT: ("[Tier 1] IT Act Sec 43A", f"Overprivileged entity {node_id} violates access limitation requirements."),
             })
 
-        if not is_overprivileged and risk_score >= 70:
-            rule_mappings.append({
-                ComplianceFramework.SOC2: ("[Tier 2 Heuristic] SOC2 CC6.1", f"Entity {node_id} has a high semantic risk score ({risk_score}/100), suggesting potential overprivilege."),
-                ComplianceFramework.GDPR: ("[Tier 2 Heuristic] GDPR Art 32", f"High risk score ({risk_score}) on {node_id} flags potential data exposure risk."),
-                ComplianceFramework.PCI_DSS: ("[Tier 2 Heuristic] PCI-DSS 7.1.1", f"High risk score ({risk_score}) on {node_id} requires role-based access review."),
-                ComplianceFramework.RBI: ("[Tier 2 Heuristic] RBI Cyber Security Sec 2.1", f"Risk score ({risk_score}) on {node_id} warrants access re-certification."),
-                ComplianceFramework.DPDP: ("[Tier 2 Heuristic] DPDP Sec 8(4)", f"Semantic risk ({risk_score}) on {node_id} indicates weak security safeguards."),
-                ComplianceFramework.IT_ACT: ("[Tier 2 Heuristic] IT Act Sec 43A", f"High risk score ({risk_score}) on {node_id} suggests inadequate access control."),
-            })
-            
-        if not is_dormant and password_last_used not in ('N/A', 'never', 'no_information', ''):
-            from datetime import datetime, timezone
-            try:
-                last_used_date = datetime.strptime(password_last_used, '%Y-%m-%dT%H:%M:%S+00:00')
-                days_inactive = (datetime.now(timezone.utc) - last_used_date.replace(tzinfo=timezone.utc)).days
-                if 45 <= days_inactive < 90:
-                    rule_mappings.append({
-                        ComplianceFramework.PCI_DSS: ("[Tier 2 Heuristic] PCI-DSS 8.1.4", f"Entity {node_id} has been inactive for {days_inactive} days (nearing 90-day dormant limit)."),
-                        ComplianceFramework.IRDAI: ("[Tier 2 Heuristic] IRDAI InfoSec 3.2", f"Entity {node_id} inactive for {days_inactive} days, approaching dormant risk."),
-                        ComplianceFramework.SOC2: ("[Tier 2 Heuristic] SOC2 CC6.2", f"Entity {node_id} inactive for {days_inactive} days, requires lifecycle review."),
-                        ComplianceFramework.SEBI: ("[Tier 2 Heuristic] SEBI Cyber Sec Annexure 1", f"Entity {node_id} inactive for {days_inactive} days, review account status."),
-                    })
-            except Exception:
-                pass
-
-        if isinstance(services, list) and len(services) >= 5:
-            rule_mappings.append({
-                ComplianceFramework.SOC2: ("[Tier 2 Heuristic] SOC2 CC6.1", f"Entity {node_id} has access to {len(services)} distinct services, increasing blast radius."),
-                ComplianceFramework.HIPAA: ("[Tier 2 Heuristic] HIPAA 164.312(a)(1)", f"Entity {node_id} wide service access ({len(services)} services) may violate access controls."),
-                ComplianceFramework.SEBI: ("[Tier 2 Heuristic] SEBI Cyber Sec Annexure 1", f"Entity {node_id} broad access ({len(services)} services) requires review."),
-                ComplianceFramework.GDPR: ("[Tier 2 Heuristic] GDPR Art 32", f"Entity {node_id} broad access ({len(services)} services) expands data exposure footprint."),
-                ComplianceFramework.DPDP: ("[Tier 2 Heuristic] DPDP Sec 8(4)", f"Entity {node_id} broad access ({len(services)} services) increases data breach risk."),
-                ComplianceFramework.IT_ACT: ("[Tier 2 Heuristic] IT Act Sec 43A", f"Entity {node_id} access to {len(services)} services indicates lack of granular controls."),
-            })
-
-        if not is_admin and not has_mfa and node_type == 'user':
-            rule_mappings.append({
-                ComplianceFramework.PCI_DSS: ("[Tier 2 Heuristic] PCI-DSS 8.3", f"Non-admin user {node_id} lacks MFA. PCI-DSS increasingly recommends MFA for all access."),
-                ComplianceFramework.RBI: ("[Tier 2 Heuristic] RBI Cyber Security Sec 2.1", f"Non-admin user {node_id} lacks MFA. Consider enforcing 2FA globally."),
-                ComplianceFramework.SOC2: ("[Tier 2 Heuristic] SOC2 CC6.3", f"Non-admin user {node_id} lacks MFA. Best practices suggest global MFA enforcement."),
-                ComplianceFramework.GDPR: ("[Tier 2 Heuristic] GDPR Art 32", f"Non-admin user {node_id} lacks MFA. Consider global MFA to strengthen data protection."),
-                ComplianceFramework.IT_ACT: ("[Tier 2 Heuristic] IT Act Sec 43A", f"Non-admin user {node_id} lacks MFA. Global MFA reduces unauthorized access risks."),
-            })
-
         for mapping in rule_mappings:
             for fw_key, (control, desc) in mapping.items():
-                if fw_key.value in frameworks:
-                    violations.append({"entity": node_id, "control": control, "description": desc})
+                fw_clean = fw_key.value.lower().replace('-', '').replace('_', '').replace(' ', '')
+                for f in frameworks:
+                    f_clean = f.lower().replace('-', '').replace('_', '').replace(' ', '')
+                    if fw_clean in f_clean or f_clean in fw_clean:
+                        violations.append({"entity": node_id, "control": control, "description": desc})
+                        break
 
         return violations
 
+    @staticmethod
+    async def map_nodes_batch_llm(nodes: List[Dict], frameworks: List[str]) -> List[Dict[str, str]]:
+        if not frameworks or not nodes:
+            return []
+            
+        api_key = os.getenv("GROQ_API_KEY")
+        if not api_key:
+            return []
+            
+        client = AsyncGroq(api_key=api_key, max_retries=1, timeout=45.0)
+        
+        # Sort nodes by risk score descending and cap at 50 to prevent massive payloads and rate limits
+        sorted_nodes = sorted(nodes, key=lambda x: x.get('risk_score', 0), reverse=True)[:50]
+        
+        # Prepare a compressed payload
+        compressed_nodes = []
+        for n in sorted_nodes:
+            compressed_nodes.append({
+                "id": n.get("id"),
+                "type": n.get("type"),
+                "is_admin": n.get("is_admin", False),
+                "is_overprivileged": n.get("is_overprivileged", False),
+                "has_mfa": n.get("has_mfa", False),
+                "is_dormant": n.get("is_dormant", False),
+                "risk_score": n.get("risk_score", 0)
+            })
+            
+        system_prompt = f"""You are an expert Cloud Compliance & Security Auditor. 
+You will receive a list of cloud IAM identities/resources (nodes) and a list of target compliance frameworks.
+Evaluate ONLY the nodes that exhibit complex or compound security risks (e.g. high risk_score, overprivileged, missing MFA on sensitive accounts) against the provided frameworks.
+Your goal is to find complex compliance violations that simple static rules might miss.
+
+Frameworks to evaluate against: {', '.join(frameworks)}
+
+Respond ONLY with a JSON object containing a single key "violations" which maps to an array of violation objects. Each violation object MUST have:
+- "entity": The exact ID of the node.
+- "framework": The specific compliance framework this violates (MUST exactly match one from the list above, e.g. "SOC2", "GDPR").
+- "control": The exact framework control clause violated (e.g., "SOC2 CC6.1", "GDPR Art 32").
+- "description": A clear, crisp, and professional description of the violation. Ensure any referenced node types use exact Neo4j naming conventions (e.g. 'User', 'Role', 'S3Bucket', 'RDS', 'EC2').
+- "severity": Must be exactly "critical", "high", or "medium".
+
+If no complex violations are found, return {{"violations": []}}.
+Output ONLY valid JSON. No markdown wrappers."""
+
+        max_retries = 2
+        for attempt in range(max_retries):
+            current_model = "openai/gpt-oss-20b" if attempt == 0 else "openai/gpt-oss-120b"
+            try:
+                response = await client.chat.completions.create(
+                    model=current_model,
+                    messages=[
+                        {"role": "system", "content": system_prompt},
+                        {"role": "user", "content": json.dumps(compressed_nodes)}
+                    ],
+                    temperature=0.1
+                )
+                
+                content = response.choices[0].message.content or ""
+                content = content.strip()
+                if not content:
+                    raise ValueError(f"Model {current_model} returned empty content.")
+                
+                # Robust JSON extraction
+                import re
+                json_match = re.search(r'```(?:json)?\s*([\s\S]*?)\s*```', content)
+                if json_match:
+                    content = json_match.group(1).strip()
+                else:
+                    start = content.find('{')
+                    end = content.rfind('}')
+                    if start != -1 and end != -1:
+                        content = content[start:end+1]
+                    elif content.strip().startswith('['):
+                        start = content.find('[')
+                        end = content.rfind(']')
+                        if start != -1 and end != -1:
+                            content = content[start:end+1]
+                    
+                # Handle potential {"violations": [...]} wrapper if the model adds one
+                parsed = json.loads(content)
+                if isinstance(parsed, dict) and "violations" in parsed:
+                    return parsed["violations"]
+                elif isinstance(parsed, list):
+                    return parsed
+                else:
+                    return []
+            except Exception as e:
+                if attempt == max_retries - 1:
+                    logger.warning(f"LLM Compliance Mapping failed after {max_retries} attempts: {e}")
+                    return []
 
 
 class AIRemediationEngine:
@@ -126,10 +175,10 @@ class AIRemediationEngine:
     def __init__(self):
         self.api_key = os.getenv("GROQ_API_KEY")
         if self.api_key:
-            self.client = AsyncGroq(api_key=self.api_key)
+            self.client = AsyncGroq(api_key=self.api_key, max_retries=1, timeout=45.0)
         else:
             self.client = None
-        self.model = "llama-3.3-70b-versatile"
+        self.model = "openai/gpt-oss-20b"
         
     async def get_remediation(self, violation_context: Dict) -> Dict:
         """Call LLM to get remediation steps."""
@@ -151,22 +200,58 @@ Provide a JSON response with exactly these keys:
 Provide ONLY the JSON object, no markdown wrappers, no explanations.
 """
         
-        user_prompt = f"Fix this compliance violation: {json.dumps(violation_context)}"
+        from collectors.transit_encryption import TransitObfuscator
+        obfuscator = TransitObfuscator(prefix="SEC_")
+        terms_to_mask = TransitObfuscator.extract_sensitive_data(violation_context)
         
-        try:
-            response = await self.client.chat.completions.create(
-                model=self.model,
-                messages=[
-                    {"role": "system", "content": system_prompt},
-                    {"role": "user", "content": user_prompt}
-                ],
-                response_format={"type": "json_object"},
-                temperature=0.1
-            )
-            content = response.choices[0].message.content
-            return json.loads(content)
-        except Exception as e:
-            logger.error(f"LLM Remediation failed: {e}")
+        user_prompt_raw = f"Fix this compliance violation: {json.dumps(violation_context)}"
+        user_prompt = obfuscator.mask_terms(user_prompt_raw, terms_to_mask)
+        
+        max_retries = 2
+        for attempt in range(max_retries):
+            current_model = "openai/gpt-oss-20b" if attempt == 0 else "openai/gpt-oss-120b"
+            try:
+                kwargs = {
+                    "model": current_model,
+                    "messages": [
+                        {"role": "system", "content": system_prompt},
+                        {"role": "user", "content": user_prompt}
+                    ],
+                    "response_format": {"type": "json_object"},
+                    "temperature": 0.1
+                }
+                
+                try:
+                    response = await self.client.chat.completions.create(**kwargs)
+                except Exception as api_e:
+                    if "json_validate_failed" in str(api_e):
+                        kwargs_no_json = kwargs.copy()
+                        del kwargs_no_json["response_format"]
+                        response = await self.client.chat.completions.create(**kwargs_no_json)
+                    else:
+                        raise api_e
+                        
+                content = response.choices[0].message.content or ""
+                content = content.strip()
+                if not content:
+                    raise ValueError(f"Model {current_model} returned empty content.")
+                    
+                import re
+                json_match = re.search(r'```(?:json)?\s*([\s\S]*?)\s*```', content)
+                if json_match:
+                    content = json_match.group(1).strip()
+                else:
+                    start = content.find('{')
+                    end = content.rfind('}')
+                    if start != -1 and end != -1:
+                        content = content[start:end+1]
+                        
+                content = obfuscator.unmask_text(content)
+                    
+                return json.loads(content)
+            except Exception as e:
+                if attempt == max_retries - 1:
+                    logger.error(f"LLM Remediation failed after {max_retries} attempts: {e}")
             
             # Static fallback correlation if API fails (rate limits, etc)
             path_name = violation_context.get('path_name', '').lower()
@@ -195,6 +280,183 @@ Provide ONLY the JSON object, no markdown wrappers, no explanations.
                     "terraform_snippet": "# Review Terraform definitions for least privilege"
                 }
 
+    async def get_batch_remediations(self, paths_contexts: list) -> Dict[str, Dict]:
+        """Call LLM to get remediation steps for ALL paths in chunks to avoid TPM limits."""
+        import json
+        import re
+        
+        if not paths_contexts:
+            return {}
+            
+        if not self.client:
+            return {
+                ctx.get("path_id", ""): {
+                    "executive_summary": "Manual review required. AI remediation currently not working.",
+                    "cli_command": "# Ensure you have valid credentials before proceeding\necho 'Remediation pending API configuration'",
+                    "terraform_snippet": "# Terraform remediation pending API configuration"
+                } for ctx in paths_contexts
+            }
+
+        final_remediations = {}
+        
+        # Sort paths by risk severity to prioritize critical ones if we fail later
+        severity_map = {"critical": 0, "high": 1, "medium": 2, "low": 3}
+        sorted_contexts = sorted(paths_contexts, key=lambda x: severity_map.get(str(x.get("risk_severity")).lower(), 4))
+        
+        # Process in chunks of 1 to avoid exceeding max_tokens, TPM limits, or truncation
+        chunk_size = 1
+        for i in range(0, len(sorted_contexts), chunk_size):
+            chunk = sorted_contexts[i:i + chunk_size]
+            
+            compressed_paths = []
+            for ctx in chunk:
+                nodes = ctx.get("nodes")
+                if not isinstance(nodes, list):
+                    nodes = []
+                    
+                nodes_involved = []
+                for n in nodes[:3]:
+                    if isinstance(n, dict):
+                        nodes_involved.append(n.get("type", "Unknown"))
+                    else:
+                        nodes_involved.append(str(n))
+                        
+                compressed_paths.append({
+                    "path_id": ctx.get("path_id"),
+                    "path_name": ctx.get("path_name"),
+                    "nodes_involved": nodes_involved,
+                    "frameworks": ctx.get("applicable_compliance_frameworks", [])
+                })
+
+            system_prompt = """You are an expert Cloud Security Architect.
+You are given a list of attack paths. For each path, provide remediation steps in STRICT JSON format.
+You must return a valid JSON object where keys are the path_ids, and values are the remediation objects. Do not wrap it in markdown. Do not include any other text.
+Format:
+{
+  "<path_id>": {
+    "executive_summary": "Brief risk explanation citing frameworks.",
+    "cli_command": "aws iam fix-command...",
+    "terraform_snippet": "resource 'aws_iam' { ... }"
+  }
+}
+"""
+
+            from collectors.transit_encryption import TransitObfuscator
+            obfuscator = TransitObfuscator(prefix="SEC_")
+            terms_to_mask = TransitObfuscator.extract_sensitive_data(compressed_paths)
+            
+            user_prompt_raw = f"Paths to remediate: {json.dumps(compressed_paths)}"
+            user_prompt = obfuscator.mask_terms(user_prompt_raw, terms_to_mask)
+
+            import asyncio
+            max_retries = 3
+            
+            for attempt in range(max_retries):
+                # Upgrade to more powerful model on retries
+                current_model = self.model if attempt == 0 else "openai/gpt-oss-120b"
+                try:
+                    kwargs = {
+                        "model": current_model,
+                        "messages": [
+                            {"role": "system", "content": system_prompt},
+                            {"role": "user", "content": user_prompt}
+                        ],
+                        "response_format": {"type": "json_object"},
+                        "temperature": 0.1,
+                        "max_tokens": 2500
+                    }
+                    
+                    try:
+                        response = await self.client.chat.completions.create(**kwargs)
+                    except Exception as api_e:
+                        if "json_validate_failed" in str(api_e):
+                            kwargs_no_json = kwargs.copy()
+                            del kwargs_no_json["response_format"]
+                            response = await self.client.chat.completions.create(**kwargs_no_json)
+                        else:
+                            raise api_e
+                            
+                    content = response.choices[0].message.content or ""
+                    
+                    # Strip markdown json wrappers
+                    content = re.sub(r'^```(?:json)?\s*([\s\S]*?)\s*```$', r'\1', content.strip()).strip()
+                    
+                    # In case the model still puts extra text, extract the outermost JSON object
+                    start_idx = content.find('{')
+                    end_idx = content.rfind('}')
+                    if start_idx != -1 and end_idx != -1:
+                        content = content[start_idx:end_idx+1]
+                        
+                    content = obfuscator.unmask_text(content)
+                    data = json.loads(content, strict=False)
+                    
+                    matches = []
+                    for path_id, item in data.items():
+                        if isinstance(item, dict) and "executive_summary" in item:
+                            matches.append((
+                                str(path_id),
+                                str(item.get("executive_summary", "")),
+                                str(item.get("cli_command", "")),
+                                str(item.get("terraform_snippet", ""))
+                            ))
+
+                    
+                    if not matches:
+                        raise ValueError(f"No valid paths found in output. Raw output: {content[:100]}...")
+                        
+                    for match in matches:
+                        path_id, summary, cli, tf = match
+                        final_remediations[path_id.strip()] = {
+                            "executive_summary": summary.strip(),
+                            "cli_command": cli.strip(),
+                            "terraform_snippet": tf.strip()
+                        }
+                    break # Break out of retry loop on success
+                    
+                except Exception as e:
+                    error_str = str(e)
+                    is_rate_limit = '429' in error_str or 'Rate limit' in error_str
+                    
+                    if is_rate_limit or attempt < max_retries - 1:
+                        match = re.search(r'try again in (\d+\.?\d*)s', error_str) if is_rate_limit else None
+                        sleep_time = float(match.group(1)) + 0.5 if match else (2 ** attempt) + 1.0
+                        reason = "Rate limit hit" if is_rate_limit else f"Format parse error ({error_str})"
+                        logger.warning(f"{reason}! Sleeping for {sleep_time}s (Attempt {attempt+1}/{max_retries})")
+                        await asyncio.sleep(sleep_time)
+                        continue
+                    
+                    # If not recoverable, or out of retries, fall back to static
+                    logger.error(f"Batch LLM Remediation chunk failed permanently: {e}")
+                    # Fallback for this specific chunk
+                    for ctx in chunk:
+                        path_id = ctx.get("path_id", "")
+                        path_name = str(ctx.get("path_name", "")).lower()
+                        
+                        if 'mfa' in path_name:
+                            final_remediations[path_id] = {
+                                "executive_summary": "This path lacks sufficient Multi-Factor Authentication enforcement. MFA should be universally required for all privileged accounts.",
+                                "cli_command": "# Enforce MFA for the identified identity.",
+                                "terraform_snippet": "# Add MFA condition or MFA enforcement blocks to your Terraform identity resources."
+                            }
+                        elif 'admin' in path_name or 'privilege' in path_name:
+                            final_remediations[path_id] = {
+                                "executive_summary": "This identity possesses overprivileged access. Review and detach the excessively broad policies to strictly enforce the principle of least privilege.",
+                                "cli_command": "# Detach the excessively permissive policies from the identity.",
+                                "terraform_snippet": "# Remove the broad admin policy attachments from your Terraform configuration."
+                            }
+                        else:
+                            final_remediations[path_id] = {
+                                "executive_summary": "This path exposes potentially sensitive privileges. A manual security review of the associated IAM roles and bindings is highly recommended.",
+                                "cli_command": "# Use cloud provider CLI tools to audit and restrict the excessive permissions identified in this path.",
+                                "terraform_snippet": "# Adjust the corresponding IAM policies and resource bindings in your Terraform configuration to restrict access."
+                            }
+                    break # Don't retry if it fell back
+                        
+            # Sleep briefly between chunks to relieve TPM pressure
+            await asyncio.sleep(3.0)
+            
+        return final_remediations
+
 class EnterpriseReportGenerator:
     """Generates professional PDF reports using Jinja2 and Weasyprint."""
     
@@ -216,11 +478,12 @@ class EnterpriseReportGenerator:
                 .text-red { color: #dc2626; }
                 .text-orange { color: #ea580c; }
                 .text-green { color: #16a34a; }
-                table { width: 100%; border-collapse: collapse; margin-top: 1rem; margin-bottom: 2rem; }
-                th, td { text-align: left; padding: 0.75rem; border-bottom: 1px solid #e5e7eb; }
+                table { width: 100%; border-collapse: collapse; margin-top: 1rem; margin-bottom: 2rem; table-layout: fixed; }
+                th, td { text-align: left; padding: 0.75rem; border-bottom: 1px solid #e5e7eb; vertical-align: top; word-wrap: break-word; overflow-wrap: break-word; }
+                tr { page-break-inside: avoid; }
                 th { background-color: #f3f4f6; font-weight: 600; }
                 pre { background: #1e1e1e; color: #d4d4d4; padding: 1rem; border-radius: 0.375rem; font-size: 0.875rem; white-space: pre-wrap; word-wrap: break-word; }
-                .badge { display: inline-block; padding: 0.25rem 0.5rem; font-size: 0.75rem; font-weight: 600; border-radius: 9999px; }
+                .badge { display: inline-block; padding: 0.25rem 0.5rem; font-size: 0.75rem; font-weight: 600; border-radius: 9999px; word-wrap: break-word; overflow-wrap: break-word; white-space: normal; }
                 .badge-critical { background: #fee2e2; color: #991b1b; }
                 .badge-high { background: #ffedd5; color: #9a3412; }
             </style>
@@ -247,30 +510,21 @@ class EnterpriseReportGenerator:
 
             <h2>Compliance Violations</h2>
             {% if compliance_violations %}
-                <table>
+                <table style="table-layout: fixed; width: 100%;">
                     <thead>
                         <tr>
-                            <th>Entity</th>
-                            <th>Control</th>
-                            <th>Description</th>
+                            <th style="width: 30%;">Entity</th>
+                            <th style="width: 25%;">Control</th>
+                            <th style="width: 45%;">Description</th>
                         </tr>
                     </thead>
                     <tbody>
                         {% for v in compliance_violations %}
                         <tr>
-                            <td>{{ v.entity }}</td>
-                            <td><span class="badge badge-high">{{ v.control }}</span></td>
-                            <td>
-                                {{ v.description }}
-                                {% if v.remediation_json %}
-                                    <div style="margin-top: 0.5rem; padding: 0.5rem; background-color: #f3f4f6; border-radius: 0.25rem;">
-                                        <strong>AI Remediation:</strong> {{ v.remediation_json.executive_summary }}<br>
-                                        <strong style="display: block; margin-top: 0.25rem;">CLI Fix:</strong>
-                                        <pre style="margin: 0; padding: 0.5rem; font-size: 0.75rem;"><code>{{ v.remediation_json.cli_command }}</code></pre>
-                                        <strong style="display: block; margin-top: 0.25rem;">Terraform Fix:</strong>
-                                        <pre style="margin: 0; padding: 0.5rem; font-size: 0.75rem;"><code>{{ v.remediation_json.terraform_snippet }}</code></pre>
-                                    </div>
-                                {% endif %}
+                            <td style="word-wrap: break-word; overflow-wrap: break-word; white-space: pre-wrap;">{{ v.resource_id }}</td>
+                            <td><span class="badge badge-high">{{ v.violation_type }}</span></td>
+                            <td style="word-wrap: break-word; overflow-wrap: break-word; white-space: pre-wrap;">
+                                {{ v.actual_state }}
                             </td>
                         </tr>
                         {% endfor %}
@@ -311,15 +565,28 @@ class EnterpriseReportGenerator:
 
     def generate_pdf(self, scan_id: str, report_data: Dict) -> str:
         """Renders HTML and converts to PDF using Weasyprint."""
+        from weasyprint import HTML
         env = Environment(loader=BaseLoader())
         template = env.from_string(self.html_template)
+        
+        def format_compliance_name(name):
+            if not name: return "Unknown"
+            if "digital_personal_data_protection" in name.lower() or "dpdp" in name.lower():
+                return "DPDP Act 2023"
+            return str(name).replace("_", " ").title()
+
+        compliance_violations = report_data.get('compliance_violations', [])
+        if compliance_violations:
+            for v in compliance_violations:
+                if 'violation_type' in v:
+                    v['violation_type'] = format_compliance_name(v['violation_type'])
         
         html_out = template.render(
             scan_id=scan_id,
             date=report_data.get('date', datetime.now().strftime('%Y-%m-%d %H:%M:%S')),
             frameworks=report_data.get('frameworks', []),
             stats=report_data.get('stats', {}),
-            compliance_violations=report_data.get('compliance_violations', []),
+            compliance_violations=compliance_violations,
             attack_paths=report_data.get('attack_paths', [])
         )
         

@@ -1,5 +1,6 @@
 #!/bin/bash
 
+#login to gcloud is required
 PROJECT_ID=$(gcloud config get-value project)
 if [ -z "$PROJECT_ID" ]; then
     echo "Error: No GCP project configured. Please run 'gcloud config set project YOUR_PROJECT_ID'"

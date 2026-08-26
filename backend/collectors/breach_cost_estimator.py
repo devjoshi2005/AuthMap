@@ -301,38 +301,42 @@ class BreachCostEstimator:
         low_estimate = 0
         high_estimate = 0
         for fw in frameworks:
+            low = 0
+            high = 0
             regs = REGULATORY_MAXIMUMS.get(fw, {})
-            if fw == ComplianceFramework.DPDP:
-                max_inr = regs.get("security_failure", 250_000_000)
-                max_usd = max_inr * regs.get("usd_conversion", 0.012)
-                max_penalty = max(max_penalty, max_usd)
-                severity_factor = sensitivity.value / 6.0
-                scale_factor = min(records_exposed / 1_000_000, 1.0)
-                low = max_usd * 0.05 * severity_factor
-                high = max_usd * 0.35 * max(severity_factor, scale_factor)
-            elif fw == ComplianceFramework.RBI:
-                max_inr = regs.get("major_incident", 100_000_000)
-                max_usd = max_inr * regs.get("usd_conversion", 0.012)
-                max_penalty = max(max_penalty, max_usd)
-                low = max_usd * 0.1; high = max_usd * 0.6
-            elif fw == ComplianceFramework.PCI_DSS:
-                per_record = regs.get("per_record_high", 90)
-                max_usd = per_record * records_exposed
-                max_penalty = max(max_penalty, max_usd)
-                low = per_record * 0.5 * records_exposed
-                high = per_record * records_exposed
-            elif fw == ComplianceFramework.GDPR:
-                max_eur = company_revenue * 0.04 if company_revenue else regs.get("tier2_max", 20_000_000)
-                max_usd = max_eur * regs.get("usd_conversion", 1.08)
-                max_penalty = max(max_penalty, max_usd)
-                low = max_usd * 0.02; high = max_usd * 0.15
-            elif fw == ComplianceFramework.SOC2 and company_revenue:
-                impact_pct = regs.get("estimated_revenue_impact_pct", 0.15)
-                max_usd = company_revenue * impact_pct
-                max_penalty = max(max_penalty, max_usd)
-                low = max_usd * 0.05; high = max_usd * 0.3
-            else:
-                continue
+            match fw:
+                case ComplianceFramework.DPDP:
+                    max_inr = regs.get("security_failure", 250_000_000)
+                    max_usd = max_inr * regs.get("usd_conversion", 0.012)
+                    max_penalty = max(max_penalty, max_usd)
+                    severity_factor = sensitivity.value / 6.0
+                    scale_factor = min(records_exposed / 1_000_000, 1.0)
+                    low = max_usd * 0.05 * severity_factor
+                    high = max_usd * 0.35 * max(severity_factor, scale_factor)
+                case ComplianceFramework.RBI:
+                    max_inr = regs.get("major_incident", 100_000_000)
+                    max_usd = max_inr * regs.get("usd_conversion", 0.012)
+                    max_penalty = max(max_penalty, max_usd)
+                    low = max_usd * 0.1; high = max_usd * 0.6
+                case ComplianceFramework.PCI_DSS:
+                    per_record = regs.get("per_record_high", 90)
+                    max_usd = per_record * records_exposed
+                    max_penalty = max(max_penalty, max_usd)
+                    low = per_record * 0.5 * records_exposed
+                    high = per_record * records_exposed
+                case ComplianceFramework.GDPR:
+                    max_eur = company_revenue * 0.04 if company_revenue else regs.get("tier2_max", 20_000_000)
+                    max_usd = max_eur * regs.get("usd_conversion", 1.08)
+                    max_penalty = max(max_penalty, max_usd)
+                    low = max_usd * 0.02; high = max_usd * 0.15
+                case ComplianceFramework.SOC2:
+                    if company_revenue:
+                        impact_pct = regs.get("estimated_revenue_impact_pct", 0.15)
+                        max_usd = company_revenue * impact_pct
+                        max_penalty = max(max_penalty, max_usd)
+                        low = max_usd * 0.05; high = max_usd * 0.3
+                case _:
+                    continue
             low_estimate += low; high_estimate += high
         cap = 500_000_000
         return (min(max_penalty, cap), (min(low_estimate, cap), min(high_estimate, cap)))

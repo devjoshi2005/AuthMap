@@ -516,9 +516,25 @@ AuthMap checks **27 CIS controls** across 5 categories:
 
 ---
 
-## 9. AI Remediation Engine
+## 9. AI Orchestration & Remediation Engine (AuthMap AI)
 
-### 9.1 Architecture
+### 9.1 Multi-Tier AI Architecture & Dual RAG
+
+AuthMap features a conversational AI agent (AuthMap AI) powered by a dual-RAG architecture and a tiered multi-model orchestration system. While the core remediation engine specifically relies on `llama-3.3-70b-versatile` for generating standardized infrastructure-as-code fixes, the interactive AI widget supports dynamic routing based on query complexity and multimodal inputs:
+
+- **Model Tiering**:
+  - **Fast (20B)**: Optimized for rapid, general-purpose compliance answers.
+  - **Balanced (70B)**: The standard flagship model (`llama-3.3-70b-versatile`) for high-accuracy reasoning and Terraform generation.
+  - **Complex (120B GPT OSS)**: Used for the most demanding, context-heavy graph topology queries.
+  - **Vision (Qwen 2.5 72B Instruct)**: Hugging Face serverless integration specifically for parsing cloud console screenshots and architectural diagrams.
+
+- **Dual RAG System**:
+  - **Supabase Persistent Vector IndexedDB RAG**: Client-side semantic caching and vector storage powered by `Transformers.js` and `hnswlib-wasm`, allowing zero-server-footprint retrieval of compliance benchmarks.
+  - **Semantic Query Cache**: An optimized IndexedDB transaction store that caches vector similarity results locally. If a user repeats a compliance query, the frontend instantly resolves it from the local semantic cache, bypassing both the embedding calculation and backend LLM inference entirely.
+  - **Neo4j GraphRAG**: Real-time generation of Cypher queries to traverse IAM relationships, role assumption chains, and toxic privilege flows natively within the graph topology.
+- **Web Search Integration**: Live threat intelligence augmentation for newly disclosed vulnerabilities or compliance standard changes.
+
+### 9.2 Automated Remediation Flow
 
 ```mermaid
 flowchart TD
@@ -674,6 +690,19 @@ aws iam update-assume-role-policy \\
 | **Data exfiltration via LLM** | Context anonymization. No ARNs, no account IDs, no resource names in prompts. |
 | **Insider threat (AuthMap operator)** | RLS in Supabase. No raw credential access. Audit logs of all scans. |
 
+### 11.3 AI Security Guardrails & Data Privacy
+
+To safely integrate generative AI capabilities into the core compliance engine, AuthMap enforces a strict security boundary around LLM interactions:
+
+- **Microsoft Presidio PII & Cloud Secret Redactor**: A highly optimized, local NLP anonymization engine scans all outbound LLM prompts. Utilizing targeted English NLP models (`en_core_web_sm`), it masks all sensitive cloud credentials (AWS keys, GCP service accounts), JWTs, UUIDs, IPs, and generic PII *before* they ever reach the AI provider.
+- **48-Hour Rolling Memory Window**: Strict data retention policies are enforced across all layers (IndexedDB client-side cache, Supabase AI conversation logs, and browser Session Storage). All transient conversational data and AI memory context is permanently purged after 48 hours to comply with enterprise data retention requirements. (Permanent RAG sources like compliance benchmarks remain exempt).
+- **Zero-Retention Vision Processing**: Multimodal image processing strictly utilizes Hugging Face Serverless APIs. Raw image bytes sent to `Qwen2.5-VL-72B-Instruct` are processed in-memory and immediately discarded, ensuring zero user data is ever stored or utilized for model training.
+- **Meta Llama Guard 3 Taxonomy**: A strict ML safety and zero-shot domain classifier intercepts all queries. It instantly blocks non-domain queries (e.g., homework, off-topic chats) and enforces strict safety filters against 14 risk categories including prompt injection attempts, system instruction exfiltration (S13/S14), and malicious payloads.
+- **Rust-Based HTML Sanitization (`nh3`)**: To prevent Cross-Site Scripting (XSS) and malicious payload rendering, all incoming RAG chunks and external data are aggressively stripped of HTML tags using `nh3` (Ammonia), a high-performance, sandboxed Rust library bound to Python.
+- **SSRF Prevention & IP Sandboxing**: The live Web Search agent is tightly sandboxed via IP address validation. It automatically drops any DNS resolutions pointing to local/private IP ranges (e.g., `127.0.0.1`, `10.0.0.0/8`, AWS IMDS metadata `169.254.169.254`), completely mitigating Server-Side Request Forgery attacks.
+- **Client-Side Image Sanitization**: Before network transmission, all pasted images are natively downscaled via the browser Canvas API to a maximum dimension of 512px. This dramatically shrinks the Base64 payload, stripping EXIF metadata implicitly and preventing Token limit exhaustion (e.g., 413 Payload Too Large).
+- **RapidOCR Text Inspection Guardrails**: If images contain embedded text, they are pre-processed by `rapidocr-onnxruntime`. The extracted text is tagged as `<untrusted_ocr_content>` in the system prompt, specifically instructing the orchestrator to treat the content purely as passive observational data—neutralizing embedded prompt-injection attacks.
+
 ---
 
 ## 12. Deployment
@@ -703,7 +732,8 @@ flowchart TB
     subgraph External["External APIs"]
         J[AWS APIs]
         K[GCP APIs]
-        L[Groq API<br/>llama-3.3-70b-versatile]
+        L[Groq API<br/>llama-3.3-70b-versatile<br/>llama-4-maverick-17b]
+        M[Hugging Face API<br/>Qwen2.5-VL-72B-Instruct]
     end
     
     A -->|HTTPS| B
@@ -717,6 +747,7 @@ flowchart TB
     E --> F
     F --> G
     G --> L
+    G --> M
     B --> I
     G --> I
 ```
@@ -725,13 +756,15 @@ flowchart TB
 
 | Layer | Technology | Purpose |
 |-------|-----------|---------|
-| **Frontend** | Next.js 14, Tailwind CSS, Clerk Auth | Dashboard, scan initiation, report viewer |
-| **Backend** | FastAPI, Python 3.11 | API server, orchestration |
-| **Graph DB** | Neo4j Aura (Professional) | Attack path storage, GDS algorithms |
+| **Frontend** | Next.js 14, Tailwind CSS, Clerk Auth | Dashboard, scan initiation, report viewer, AI widget |
+| **Backend** | FastAPI, Python 3.11 | API server, orchestration, AI routing |
+| **Graph DB** | Neo4j Aura (Professional) | Attack path storage, GDS algorithms, GraphRAG |
 | **Metadata DB** | Supabase PostgreSQL | Scan metadata, user data, reports |
 | **Auth** | Clerk | JWT-based auth, RLS integration |
-| **LLM** | Groq API (`llama-3.3-70b-versatile`) | Remediation generation |
-| **ML** | scikit-learn, node2vec | LOF anomaly detection, graph embeddings |
+| **LLMs (Text)** | Groq API | Fast 20B, Balanced 70B (`llama-3.3-70b`), Complex 120B for AI Remediation & Chat |
+| **LLMs (Vision)** | Hugging Face Serverless | `Qwen2.5-VL-72B-Instruct` for zero-retention image processing |
+| **Client RAG** | IndexedDB, Transformers.js | Zero-footprint local vector search for compliance frameworks |
+| **ML & Security** | scikit-learn, node2vec, Presidio, RapidOCR | LOF anomaly detection, PII redactor, OCR extraction guardrails |
 | **Storage** | Supabase Storage | JSON reports, exported findings |
 | **Hosting** | Vercel (frontend), Render/Railway (backend) | Serverless deployment |
 

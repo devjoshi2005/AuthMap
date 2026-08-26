@@ -1677,8 +1677,8 @@ class Neo4jImporter:
                     UNWIND $edges AS edge
                     MATCH (a:Entity {id: edge.source, scan_id: edge.scan_id})
                     MATCH (b:Entity {id: edge.target, scan_id: edge.scan_id})
-                    CREATE (a)-[r:RELATES {type: edge.type}]->(b)
-                    SET r = edge.props
+                    MERGE (a)-[r:RELATES {type: edge.type}]->(b)
+                    SET r += coalesce(edge.props, {})
                 """, edges=batch)
 
         logger.info("Neo4j import complete")

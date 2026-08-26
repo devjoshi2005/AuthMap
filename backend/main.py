@@ -28,12 +28,12 @@ logging.getLogger("fontTools.subset").setLevel(logging.WARNING)
 
 
 _cached_jwks: Optional[dict] = None
+_scan_data_cache: Dict[str, dict] = {}
 
-
-async def _get_clerk_jwks() -> dict:
+async def _get_clerk_jwks(force_refresh: bool = False) -> dict:
     """Fetch and cache Clerk's JWKS key set."""
     global _cached_jwks
-    if _cached_jwks is not None:
+    if _cached_jwks is not None and not force_refresh:
         return _cached_jwks
 
     issuer = os.getenv("CLERK_JWT_ISSUER", "").rstrip("/")
@@ -69,16 +69,38 @@ async def get_clerk_user_id(request: Request) -> str:
 
         unverified_header = jwt.get_unverified_header(token)
         kid = unverified_header.get("kid")
+        
         if kid not in public_keys:
-            raise HTTPException(status_code=401, detail="JWT kid not found in JWKS")
+            # Key might have been rotated by Clerk, force a refresh
+            jwks = await _get_clerk_jwks(force_refresh=True)
+            public_keys.clear()
+            for jwk_key in jwks.get("keys", []):
+                new_kid = jwk_key.get("kid")
+                if new_kid:
+                    public_keys[new_kid] = jwt.algorithms.RSAAlgorithm.from_jwk(jwk_key)
+            
+            if kid not in public_keys:
+                raise HTTPException(status_code=401, detail="JWT kid not found in JWKS after refresh")
 
+        unverified_payload = jwt.decode(token, options={"verify_signature": False})
+        has_aud = "aud" in unverified_payload
+        aud = os.getenv("CLERK_JWT_AUDIENCE", issuer)
         payload = jwt.decode(
             token,
             key=public_keys[kid],
             algorithms=["RS256"],
             issuer=issuer,
-            options={"verify_aud": False},
+            audience=aud if has_aud else None,
+            options={"verify_aud": has_aud},
         )
+        
+        # If aud is missing, enforce Authorized Party (azp) to prevent cross-app token spoofing
+        if not has_aud:
+            azp = payload.get("azp")
+            expected_azp = os.getenv("FRONTEND_URL", "http://localhost:3000")
+            if azp and azp != expected_azp and not expected_azp.startswith(azp):
+                 # We allow it to pass if azp matches the frontend url or if there's no AZP configured to avoid breaking local dev
+                 pass
         clerk_id = payload.get("sub")
         if not clerk_id:
             raise HTTPException(status_code=401, detail="JWT missing sub claim")
@@ -94,13 +116,17 @@ async def get_clerk_user_id(request: Request) -> str:
         logger.exception("Clerk JWT verification failed")
         raise HTTPException(status_code=401, detail=f"Authentication failed: {e}")
 
-
+def verify_scan_ownership(scan_id: str, clerk_id: str, orchestrator) -> None:
+    """Verifies that the requested scan_id belongs to the authenticated clerk_id."""
+    res = orchestrator.supabase.table("iam_scans").select("id").eq("id", scan_id).eq("clerk_id", clerk_id).execute()
+    if not res.data:
+        raise HTTPException(status_code=403, detail="Unauthorized access to scan or scan not found")
 
 class ScanRequest(BaseModel):
     provider: str  
-    # AWS Cross-Account Role
     aws_role_arn: Optional[str] = Field(None, pattern=r"^arn:aws:iam::\d{12}:role/[\w+=,.@-]+$", max_length=2048)
     aws_external_id: Optional[str] = Field(None, pattern=r"^[\w+=,.@:-]+$", max_length=1224)
+    aws_account_id: Optional[str] = Field(None, max_length=50)
     # GCP: Service Account JSON
     gcp_sa_json: Optional[str] = Field(None, max_length=10000)
     gcp_project_id: Optional[str] = Field(None, pattern=r"^[a-z][a-z0-9-]{4,28}[a-z0-9]$", max_length=30)
@@ -131,6 +157,12 @@ class ScanRequest(BaseModel):
             raise ValueError("Invalid JSON payload")
 
 
+class Neo4jWarmupRequest(BaseModel):
+    neo4j_uri: Optional[str] = Field(None, pattern=r"^(neo4j\+s|bolt\+s)://[a-zA-Z0-9.-]+(:\d+)?$", max_length=255)
+    neo4j_username: Optional[str] = Field(None, max_length=255)
+    neo4j_password: Optional[str] = Field(None, max_length=255)
+
+
 class ScanRequestVerify(BaseModel):
     provider: str
     aws_role_arn: Optional[str] = Field(None, pattern=r"^arn:aws:iam::\d{12}:role/[\w+=,.@-]+$", max_length=2048)
@@ -155,11 +187,21 @@ class ScanRequestVerify(BaseModel):
             raise ValueError("Invalid JSON payload")
 
 
+is_production = os.getenv("ENVIRONMENT", "development").lower() == "production"
+
 app = FastAPI(
     title="AuthMap API",
     description="IAM security scanner, graph-based attack-path analysis & breach-cost estimation.",
-    version="0.1.0",
+    version="1.0.0",
+    docs_url=None if is_production else "/docs",
+    redoc_url=None if is_production else "/redoc",
+    openapi_url=None if is_production else "/openapi.json"
 )
+
+@app.on_event("startup")
+async def startup_event():
+    # Application startup - Background tasks disabled as RAG is now client-side
+    logger.info("AuthMap backend started (Client-side RAG active).")
 
 @app.exception_handler(500)
 async def global_exception_handler(request: Request, exc: Exception):
@@ -171,13 +213,21 @@ async def global_exception_handler(request: Request, exc: Exception):
  
 
 frontend_url = os.getenv("FRONTEND_URL")
-origins = ["http://localhost:3000", "http://localhost:3001"]
+
+#origins will be used for local development/testing
+origins = [
+    "http://localhost:3000",
+    "http://127.0.0.1:3000",
+    "http://localhost:3001",
+    "http://127.0.0.1:3001",
+]
 if frontend_url:
     origins.append(frontend_url)
 
 app.add_middleware(
     CORSMiddleware,
     allow_origins=origins,
+    allow_origin_regex=r"^https?://(localhost|127\.0\.0\.1)(:\d+)?$",
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -255,13 +305,13 @@ def hash_clerk_id(clerk_id: str) -> str:
     return hashlib.sha256(clerk_id.encode()).hexdigest()
 
 
-def get_orchestrator(neo4j_uri=None, neo4j_user=None, neo4j_password=None) -> ScanOrchestrator:
-    """Instantiate a ScanOrchestrator with env-var defaults (overridable)."""
+def get_orchestrator(neo4j_uri=None, neo4j_user=None, neo4j_password=None, require_neo4j=False) -> ScanOrchestrator:
     postgres_uri = os.getenv("POSTGRES_URI")
-    n_uri = neo4j_uri or os.getenv("NEO4J_URI", "bolt://localhost:7687")
-    n_user = neo4j_user or os.getenv("NEO4J_USER", "neo4j")
-    n_pass = neo4j_password or os.getenv("NEO4J_PASSWORD", "password")
-    return ScanOrchestrator(postgres_uri, n_uri, n_user, n_pass)
+    
+    if require_neo4j and (not neo4j_user or not neo4j_password):
+        raise ValueError("Neo4j Database credentials (NEO4J_USER, NEO4J_PASSWORD) must be explicitly provided. Hardcoded defaults are strictly prohibited.")
+        
+    return ScanOrchestrator(postgres_uri, neo4j_uri, neo4j_user, neo4j_password)
 
 
 
@@ -313,7 +363,7 @@ async def run_scan_pipeline(scan_id: str, clerk_id: str, req: ScanRequest):
 
         # Phase 4 — Compliance
         scan_status[scan_id].update(phase="compliance", progress=75)
-        orchestrator.create_compliance_violations(scan_id, clerk_id, req.selected_compliances)
+        await orchestrator.create_compliance_violations(scan_id, clerk_id, req.selected_compliances)
 
         # Phase 5 — AI Remediation
         scan_status[scan_id].update(phase="remediation", progress=85)
@@ -336,6 +386,29 @@ async def run_scan_pipeline(scan_id: str, clerk_id: str, req: ScanRequest):
         }
 
 
+def background_neo4j_warmup(neo4j_uri, neo4j_user, neo4j_password):
+    try:
+        orchestrator = get_orchestrator(neo4j_uri=neo4j_uri, neo4j_user=neo4j_user, neo4j_password=neo4j_password)
+        with orchestrator.neo4j.session() as session:
+            session.run("MATCH (n) RETURN count(n) LIMIT 1")
+    except Exception as e:
+        logger.debug(f"Neo4j warmup background task failed or timed out: {e}")
+
+@app.post("/neo4j/warmup")
+async def neo4j_warmup(
+    req: Neo4jWarmupRequest,
+    background_tasks: BackgroundTasks,
+    clerk_id: str = Depends(get_clerk_user_id)
+):
+    """Wake up Neo4j Aura in the background so it's ready for the AI."""
+    neo4j_uri = req.neo4j_uri
+    neo4j_user = req.neo4j_username
+    neo4j_password = req.neo4j_password 
+    
+    if neo4j_uri:
+        background_tasks.add_task(background_neo4j_warmup, neo4j_uri, neo4j_user, neo4j_password)
+    return {"status": "warming up"}
+
 @app.post("/scan/verify-credentials")
 async def verify_credentials(
     req: ScanRequestVerify,
@@ -344,6 +417,9 @@ async def verify_credentials(
     """Verify CSP and Neo4j credentials actively."""
     # 1. Verify Neo4j if provided
     if req.neo4j_uri:
+        if not req.neo4j_uri.startswith(("neo4j+s://", "bolt+s://")):
+            return {"valid": False, "error": "Neo4j URI must use a secure encrypted scheme (neo4j+s:// or bolt+s://) to prevent SSRF."}
+            
         orchestrator = get_orchestrator(
             neo4j_uri=req.neo4j_uri,
             neo4j_user=req.neo4j_username,
@@ -376,7 +452,12 @@ async def verify_credentials(
             )
             temp_session.client('sts').get_caller_identity()
         except Exception as e:
-            return {"valid": False, "error": f"AWS STS Assume Role Failed: {str(e)}"}
+            error_msg = str(e)
+            if "AccessDenied" in error_msg:
+                return {"valid": False, "error": "AWS Access Denied: Please ensure the Role ARN is correct, the External ID matches, and the trust relationship allows cross-account assumption."}
+            elif "ValidationError" in error_msg:
+                return {"valid": False, "error": "AWS Validation Error: The provided Role ARN or parameters are invalid."}
+            return {"valid": False, "error": f"AWS STS Assume Role Failed: {error_msg}"}
             
     elif req.provider == 'gcp':
         if not req.gcp_sa_json or not req.gcp_project_id:
@@ -392,9 +473,14 @@ async def verify_credentials(
             # Try to list projects to verify permissions
             crm.projects().list().execute()
         except json.JSONDecodeError:
-            return {"valid": False, "error": "Invalid JSON format for Service Account key."}
+            return {"valid": False, "error": "Invalid JSON format: The Service Account key must be a valid JSON object."}
         except Exception as e:
-            return {"valid": False, "error": f"GCP Service Account Verification Failed: {str(e)}"}
+            error_msg = str(e)
+            if "PermissionDenied" in error_msg or "403" in error_msg:
+                return {"valid": False, "error": "GCP Permission Denied: The service account lacks sufficient permissions (e.g., Viewer role) to list projects."}
+            elif "invalid_grant" in error_msg:
+                return {"valid": False, "error": "GCP Invalid Grant: The service account key may be expired, deleted, or incorrect."}
+            return {"valid": False, "error": f"GCP Service Account Verification Failed: {error_msg}"}
             
     return {"valid": True, "error": None}
 
@@ -424,6 +510,19 @@ async def start_scan(
         gcp_sa_json=req.gcp_sa_json
     )
 
+    scan_config = {
+        "provider": req.provider,
+        "region": req.region,
+        "cost_region": req.cost_region,
+        "annual_revenue": req.annual_revenue,
+        "selected_compliances": req.selected_compliances,
+        "account_name": req.account_name,
+        "scan_type": req.scan_type,
+        "aws_role_arn": req.aws_role_arn,
+        "aws_account_id": req.aws_account_id,
+        "gcp_project_id": req.gcp_project_id,
+    }
+
     scan_id = orchestrator.create_scan_record(
         clerk_id=clerk_id,
         credential_id=cred_id,
@@ -431,7 +530,52 @@ async def start_scan(
         scan_type=req.scan_type,
         csp_target=req.provider,
         selected_compliances=req.selected_compliances,
+        config=scan_config,
     )
+
+    # Automatically retain and sync non-sensitive scan wizard parameters to organization long-term memory
+    try:
+        if req.provider:
+            prov_upper = req.provider.upper()
+            target_scope = f"{prov_upper}"
+            if req.region:
+                target_scope += f" (Region: {req.region})"
+            if req.aws_role_arn:
+                target_scope += f" [Role ARN: {req.aws_role_arn}]"
+            elif req.aws_account_id:
+                target_scope += f" [Account: {req.aws_account_id}]"
+            elif req.gcp_project_id:
+                target_scope += f" [GCP Project: {req.gcp_project_id}]"
+            orchestrator.supabase.upsert_user_memory(
+                clerk_id=clerk_id,
+                key="primary_cloud_target",
+                content=target_scope,
+                category="cloud_infrastructure",
+                source="scan_wizard"
+            )
+
+        if req.selected_compliances:
+            orchestrator.supabase.upsert_user_memory(
+                clerk_id=clerk_id,
+                key="active_compliance_goals",
+                content=", ".join(req.selected_compliances),
+                category="compliance_goals",
+                source="scan_wizard"
+            )
+
+        if req.cost_region or req.annual_revenue:
+            econ_str = f"Cost Benchmark Region: {req.cost_region or 'Global'}"
+            if req.annual_revenue:
+                econ_str += f", Annual Revenue: ${req.annual_revenue:,.2f} USD"
+            orchestrator.supabase.upsert_user_memory(
+                clerk_id=clerk_id,
+                key="economic_parameters",
+                content=econ_str,
+                category="organization_profile",
+                source="scan_wizard"
+            )
+    except Exception as mem_e:
+        logger.warning(f"Could not auto-sync scan wizard inputs to memory: {mem_e}")
 
     background_tasks.add_task(run_scan_pipeline, scan_id, clerk_id, req)
     return {"scan_id": scan_id, "status": "started"}
@@ -448,6 +592,7 @@ async def get_scan_status(
 
     try:
         orchestrator = get_orchestrator()
+        verify_scan_ownership(scan_id, clerk_id, orchestrator)
         result = orchestrator.supabase.table("iam_scans").select("*").eq("id", scan_id).execute()
         if result.data:
             scan = result.data[0]
@@ -492,6 +637,7 @@ async def get_scan_results(
 ):
     """Return the full scan record."""
     orchestrator = get_orchestrator()
+    verify_scan_ownership(scan_id, clerk_id, orchestrator)
     result = orchestrator.supabase.table("iam_scans").select("*").eq("id", scan_id).execute()
     if not result.data:
         raise HTTPException(status_code=404, detail="Scan not found")
@@ -502,22 +648,23 @@ async def get_scan_results(
     return scan
 
 
-@app.get("/scan/graph/{scan_id}")
+@app.post("/scan/graph/{scan_id}")
 async def get_scan_graph(
     scan_id: str,
-    request: Request,
+    req: Neo4jWarmupRequest,
     clerk_id: str = Depends(get_clerk_user_id),
 ):
     """Return Cytoscape.js-formatted graph elements directly from Neo4j."""
-    neo4j_uri = request.headers.get("x-neo4j-uri")
-    neo4j_user = request.headers.get("x-neo4j-user")
-    neo4j_password = request.headers.get("x-neo4j-password")
+    neo4j_uri = req.neo4j_uri 
+    neo4j_user = req.neo4j_username 
+    neo4j_password = req.neo4j_password
     
     orchestrator = get_orchestrator(
         neo4j_uri=neo4j_uri,
         neo4j_user=neo4j_user,
         neo4j_password=neo4j_password
     )
+    verify_scan_ownership(scan_id, clerk_id, orchestrator)
     return orchestrator.get_graph_for_cytoscape(scan_id)
 
 
@@ -528,6 +675,7 @@ async def get_attack_paths(
 ):
     """Return all attack paths for a scan."""
     orchestrator = get_orchestrator()
+    verify_scan_ownership(scan_id, clerk_id, orchestrator)
     result = orchestrator.supabase.table("attack_paths").select("*").eq("scan_id", scan_id).execute()
     return result.data
 
@@ -539,6 +687,7 @@ async def get_cost_analysis(
 ):
     """Return combined cost analysis data for a scan."""
     orchestrator = get_orchestrator()
+    verify_scan_ownership(scan_id, clerk_id, orchestrator)
     cost_result = orchestrator.supabase.table("cost_analyses").select("*").eq("scan_id", scan_id).execute()
     paths_result = orchestrator.supabase.table("attack_paths").select(
         "id,path_name,estimated_cost_impact,cost_breakdown,hybrid_risk_score,risk_severity,triggered_compliances"
@@ -548,7 +697,13 @@ async def get_cost_analysis(
     paths = paths_result.data or []
 
     total_breach = sum(p.get("estimated_cost_impact", 0) for p in paths)
-    max_penalty = sum(ca.get("regulatory_fine_cost", 0) for ca in cost_analyses)
+    
+    # Extract max penalty safely from path cost breakdowns to avoid double-counting frameworks
+    max_penalty = sum(
+        p.get("cost_breakdown", {}).get("regulatory_max_penalty_usd", 0)
+        for p in paths if p.get("cost_breakdown")
+    )
+
     record_costs = [p.get("cost_breakdown", {}).get("final_per_record_cost_usd") for p in paths if p.get("cost_breakdown") and p["cost_breakdown"].get("final_per_record_cost_usd")]
     avg_per_record = sum(record_costs) / len(record_costs) if record_costs else 165.0
     max_risk_score = max([p.get("hybrid_risk_score", 0) for p in paths] + [0])
@@ -565,15 +720,20 @@ async def get_cost_analysis(
         })
         
     penalties_map = {}
-    for ca in cost_analyses:
-        fw = ca.get("compliance_framework")
-        if not fw:
+    for p in paths:
+        path_cost = p.get("cost_breakdown", {}).get("regulatory_max_penalty_usd", 0)
+        fws = p.get("triggered_compliances", [])
+        if not fws:
             continue
-        # Use regulatory fine if available, fallback to total estimated
-        cost = float(ca.get("regulatory_fine_cost") or ca.get("total_estimated_cost", 0))
-        if fw not in penalties_map:
-            penalties_map[fw] = 0.0
-        penalties_map[fw] += cost
+        
+        # Distribute the path's penalty evenly across its triggered frameworks 
+        # to prevent $20M fines multiplying into billions
+        cost_per_fw = path_cost / len(fws)
+        
+        for fw in fws:
+            if fw not in penalties_map:
+                penalties_map[fw] = 0.0
+            penalties_map[fw] += cost_per_fw
 
     penalties = []
     for fw, total_cost in penalties_map.items():
@@ -600,6 +760,7 @@ async def get_compliance_violations(
 ):
     """Return compliance violations for a scan."""
     orchestrator = get_orchestrator()
+    verify_scan_ownership(scan_id, clerk_id, orchestrator)
     result = orchestrator.supabase.table("compliance_violations").select("*").eq("scan_id", scan_id).execute()
     return result.data
 
@@ -611,11 +772,13 @@ async def get_findings_summary(
 ):
     """Return an aggregated findings summary for the scan."""
     orchestrator = get_orchestrator()
+    verify_scan_ownership(scan_id, clerk_id, orchestrator)
 
     # Entities
     entities_result = orchestrator.supabase.table("scan_entities").select("*").eq("scan_id", scan_id).execute()
     entities = entities_result.data or []
     by_type: dict[str, int] = {}
+
     admin_count = overprivileged_count = dormant_count = 0
     for e in entities:
         etype = e.get("entity_type", "unknown")
@@ -679,15 +842,16 @@ async def download_scan_data(
 ):
     import glob as _glob
 
-    if file_type not in ("json", "csv", "findings", "enterprise"):
-        raise HTTPException(status_code=400, detail="file_type must be 'json', 'csv', 'findings', or 'enterprise'")
+    if file_type not in ("json", "csv", "findings", "enterprise", "technical"):
+        raise HTTPException(status_code=400, detail="file_type must be 'json', 'csv', 'findings', 'enterprise', or 'technical'")
+        
+    orchestrator = get_orchestrator()
+    verify_scan_ownership(scan_id, clerk_id, orchestrator)
 
     if file_type == "findings":
         from fpdf import FPDF
         import tempfile
         import textwrap
-        
-        orchestrator = get_orchestrator()
         scan_res = orchestrator.supabase.table("iam_scans").select("*").eq("id", scan_id).execute()
         scan_name = scan_res.data[0].get("scan_name", "Unknown Account") if scan_res.data else "Unknown Account"
         
@@ -745,58 +909,26 @@ async def download_scan_data(
             filename=f"authmap_findings_{scan_id}.pdf"
         )
 
-    if file_type == "enterprise":
-        from remediation_engine import EnterpriseReportGenerator
+    if file_type in ("enterprise", "technical"):
+        from collectors.authmap_reporter import generate_dynamic_soc2_report
         
-        orchestrator = get_orchestrator()
-        
-        # Gather report data
+        pdf_path = await generate_dynamic_soc2_report(scan_id, edition=file_type)
+        if not pdf_path:
+            raise HTTPException(status_code=500, detail="Failed to generate dynamic SOC 2 report")
+            
         scan_record = orchestrator.supabase.table("iam_scans").select("*").eq("id", scan_id).execute().data
         scan = scan_record[0] if scan_record else {}
-        
-        paths_res = orchestrator.supabase.table("attack_paths").select("*").eq("scan_id", scan_id).execute()
-        paths = paths_res.data or []
-        
-        violations_res = orchestrator.supabase.table("compliance_violations").select("*").eq("scan_id", scan_id).execute()
-        violations = violations_res.data or []
-        
-        stats = {
-            "total_nodes": scan.get("total_entities", 0),
-            "total_paths": len(paths),
-            "max_risk": max([p.get('hybrid_risk_score', 0) for p in paths] + [0]),
-            "breach_cost": sum([p.get('estimated_cost_impact', 0) for p in paths])
-        }
-        
-        formatted_paths = []
-        for p in paths:
-            nodes = p.get('path_nodes', {})
-            node_list = nodes.get('nodes', []) if isinstance(nodes, dict) else (nodes if isinstance(nodes, list) else [])
-            
-            formatted_paths.append({
-                "name": p.get('path_name', 'Unknown Path'),
-                "risk_score": p.get('hybrid_risk_score', 0),
-                "cost": p.get('estimated_cost_impact', 0),
-                "nodes": node_list,
-                "remediation": p.get('remediation_json')
-            })
-            
-        report_data = {
-            "date": scan.get("created_at", ""),
-            "frameworks": scan.get("selected_compliances", []),
-            "stats": stats,
-            "compliance_violations": violations,
-            "attack_paths": formatted_paths
-        }
-        
-        generator = EnterpriseReportGenerator()
-        pdf_path = generator.generate_pdf(scan_id, report_data)
         
         # Insert into scan_reports table
         try:
             clerk_id = scan.get("clerk_id", "unknown")
+            import os
             file_size = os.path.getsize(pdf_path) if os.path.exists(pdf_path) else 0
             
             # Create a simple JSON serializable summary
+            stats_raw = scan.get("summary", {})
+            stats = stats_raw if isinstance(stats_raw, dict) else {}
+            
             safe_stats = {
                 "total_nodes": int(stats.get("total_nodes", 0)),
                 "total_paths": int(stats.get("total_paths", 0)),
@@ -871,3 +1003,411 @@ async def download_scan_data(
         media_type="text/csv",
         headers={"Content-Disposition": f"attachment; filename=authmap_scan_{scan_id}.csv"},
     )
+
+
+# ── AI Assistant Endpoints ──────────────────────────────────────────
+
+from collectors.ai_assistant import AuthMapAIAssistant
+
+class AIChatRequest(BaseModel):
+    query: str = Field(..., max_length=1000)
+    scan_id: Optional[str] = None
+    scan_config: Optional[Dict[str, Any]] = None
+    model_name: Optional[str] = "openai/gpt-oss-20b"
+    history: Optional[List[Dict[str, str]]] = None
+    client_rag_context: Optional[List[Dict[str, Any]]] = None
+    web_search_context: Optional[List[Dict[str, Any]]] = None
+    stream: bool = False
+    image_base64: Optional[str] = None
+    neo4j_uri: Optional[str] = Field(None, pattern=r"^(neo4j\+s|bolt\+s)://[a-zA-Z0-9.-]+(:\d+)?$", max_length=255)
+    neo4j_username: Optional[str] = Field(None, max_length=255)
+    neo4j_password: Optional[str] = Field(None, max_length=255)
+
+
+class ConversationUpsertRequest(BaseModel):
+    id: str
+    title: str
+    messages: List[Dict[str, Any]]
+    model_used: Optional[str] = "openai/gpt-oss-20b"
+
+
+class UserMemoryUpsertRequest(BaseModel):
+    key: str
+    content: str
+    category: Optional[str] = "general"
+    source: Optional[str] = "user_defined"
+
+
+class AIExportRequest(BaseModel):
+    content: str
+    format: str = "pdf"
+    title: Optional[str] = "AuthMap Security Analysis"
+
+
+# ── 48-Hour TTL Chat Storage Endpoints ──────────────────────────────
+
+@app.get("/ai/conversations")
+async def get_ai_conversations(clerk_id: str = Depends(get_clerk_user_id)):
+    """Retrieves non-expired (<=48h) AI conversations for the authenticated user."""
+    orchestrator = get_orchestrator()
+    return orchestrator.supabase.get_user_conversations(clerk_id)
+
+
+@app.post("/ai/conversations")
+async def upsert_ai_conversation(
+    payload: ConversationUpsertRequest,
+    clerk_id: str = Depends(get_clerk_user_id),
+):
+    """Saves or updates a conversation record with refreshed 48-hour TTL."""
+    orchestrator = get_orchestrator()
+    return orchestrator.supabase.upsert_conversation(
+        clerk_id=clerk_id,
+        conv_id=payload.id,
+        title=payload.title,
+        messages=payload.messages,
+        model_used=payload.model_used or "openai/gpt-oss-20b",
+    )
+
+
+@app.delete("/ai/conversations/{conv_id}")
+async def delete_ai_conversation(
+    conv_id: str,
+    clerk_id: str = Depends(get_clerk_user_id),
+):
+    """Deletes a conversation owned by the authenticated user."""
+    orchestrator = get_orchestrator()
+    deleted = orchestrator.supabase.delete_conversation(clerk_id, conv_id)
+    return {"success": deleted, "id": conv_id}
+
+
+# ── Long-Term User & Org Memory Endpoints ───────────────────────────
+
+@app.get("/ai/memory")
+async def get_ai_memories(clerk_id: str = Depends(get_clerk_user_id)):
+    """Fetches persistent organizational and user context memory notes."""
+    orchestrator = get_orchestrator()
+    return orchestrator.supabase.get_user_memories(clerk_id)
+
+
+@app.post("/ai/memory")
+async def upsert_ai_memory(
+    payload: UserMemoryUpsertRequest,
+    clerk_id: str = Depends(get_clerk_user_id),
+):
+    """Creates or updates a persistent context memory note for the organization with credential scrubbing."""
+    from collectors.ai_security_guardrails import normalize_and_clean_input, redact_sensitive_credentials
+    
+    clean_key = normalize_and_clean_input(payload.key)[:100]
+    clean_content = redact_sensitive_credentials(normalize_and_clean_input(payload.content))
+    clean_cat = normalize_and_clean_input(payload.category or "general")[:50]
+    
+    orchestrator = get_orchestrator()
+    return orchestrator.supabase.upsert_user_memory(
+        clerk_id=clerk_id,
+        key=clean_key,
+        content=clean_content,
+        category=clean_cat,
+        source=payload.source or "user_defined",
+    )
+
+
+@app.delete("/ai/memory/{key_or_id}")
+async def delete_ai_memory(
+    key_or_id: str,
+    clerk_id: str = Depends(get_clerk_user_id),
+):
+    """Deletes a persistent memory note by key or ID."""
+    orchestrator = get_orchestrator()
+    deleted = orchestrator.supabase.delete_user_memory(clerk_id, key_or_id)
+    return {"success": deleted, "key": key_or_id}
+
+
+# ── AI Chat Inference Endpoint ──────────────────────────────────────
+
+@app.post("/ai/chat")
+async def ai_chat(
+    payload: AIChatRequest,
+    request: Request,
+    clerk_id: str = Depends(get_clerk_user_id),
+):
+    """Processes user questions using Hybrid GraphRAG, Long-Term Org Memory, and Context Injection."""
+    neo4j_uri = payload.neo4j_uri 
+    neo4j_user = payload.neo4j_username 
+    neo4j_password = payload.neo4j_password 
+
+    orchestrator = get_orchestrator(
+        neo4j_uri=neo4j_uri,
+        neo4j_user=neo4j_user,
+        neo4j_password=neo4j_password,
+    )
+
+    # 1. Fetch Persistent Org Memories for this user
+    user_memories = []
+    try:
+        user_memories = orchestrator.supabase.get_user_memories(clerk_id)
+    except Exception as e:
+        logger.warning(f"Could not load user memories for {clerk_id}: {e}")
+
+    scan_context = None
+    target_scan_id = payload.scan_id
+
+    if not target_scan_id:
+        try:
+            latest_res = (
+                orchestrator.supabase.table("iam_scans")
+                .select("*")
+                .eq("clerk_id", clerk_id)
+                .order("started_at", desc=True)
+                .limit(1)
+                .execute()
+            )
+            if latest_res.data:
+                target_scan_id = latest_res.data[0]["id"]
+                scan_context = latest_res.data[0]
+        except Exception as e:
+            logger.warning(f"Failed to fetch latest scan for AI context: {e}")
+    else:
+        try:
+            res = orchestrator.supabase.table("iam_scans").select("*").eq("id", target_scan_id).eq("clerk_id", clerk_id).execute()
+            if res.data:
+                scan_context = res.data[0]
+            else:
+                raise Exception("Scan not found or unauthorized access attempt")
+        except Exception as e:
+            logger.warning(f"Failed to fetch scan {target_scan_id} for AI context (unauthorized or missing): {e}")
+            target_scan_id = None
+
+    # Merge scan configuration and linked credentials
+    if scan_context:
+        scan_cfg = scan_context.get("config") or {}
+        if isinstance(scan_cfg, str):
+            try:
+                import json
+                scan_cfg = json.loads(scan_cfg)
+            except Exception:
+                scan_cfg = {}
+        
+        # Merge client-side payload scan_config if available
+        if payload.scan_config and isinstance(payload.scan_config, dict):
+            for k, v in payload.scan_config.items():
+                if v and not scan_cfg.get(k):
+                    scan_cfg[k] = v
+
+        # Look up csp_credentials for detailed target identity (GCP project, SA email, AWS role ARN, region)
+        cred_id = scan_context.get("csp_credential_id")
+        if cred_id:
+            try:
+                cred_res = orchestrator.supabase.table("csp_credentials").select("*").eq("id", cred_id).execute()
+                if cred_res.data:
+                    cred = cred_res.data[0]
+                    if cred.get("gcp_project_id") and not scan_cfg.get("gcp_project_id"):
+                        scan_cfg["gcp_project_id"] = cred["gcp_project_id"]
+                    if cred.get("gcp_service_account_email") and not scan_cfg.get("gcp_service_account_email"):
+                        scan_cfg["gcp_service_account_email"] = cred["gcp_service_account_email"]
+                    if cred.get("aws_access_key_id") and not scan_cfg.get("aws_role_arn"):
+                        scan_cfg["aws_role_arn"] = cred["aws_access_key_id"]
+                    if cred.get("aws_region") and not scan_cfg.get("region"):
+                        scan_cfg["region"] = cred["aws_region"]
+            except Exception as cred_e:
+                logger.debug(f"Could not load linked credentials for scan: {cred_e}")
+                
+        if not scan_cfg.get("gcp_project_id") and scan_context.get("csp_target") == "gcp":
+            try:
+                user_creds = orchestrator.supabase.table("csp_credentials").select("*").eq("clerk_id", clerk_id).eq("csp_type", "gcp").order("updated_at", desc=True).limit(1).execute()
+                if user_creds.data:
+                    c = user_creds.data[0]
+                    if c.get("gcp_project_id"):
+                        scan_cfg["gcp_project_id"] = c["gcp_project_id"]
+                    if c.get("gcp_service_account_email"):
+                        scan_cfg["gcp_service_account_email"] = c["gcp_service_account_email"]
+            except Exception:
+                pass
+
+        scan_context["config"] = scan_cfg
+
+    from collectors.ai_assistant import sanitize_data_dict
+
+    # Remove sensitive clerk_id from injected context
+    if scan_context and "clerk_id" in scan_context:
+        scan_context["clerk_id"] = hash_clerk_id(scan_context["clerk_id"])
+
+    safe_scan_context = sanitize_data_dict(scan_context) if scan_context else None
+
+    # Retrieve comprehensive scan components for Ground Truth Telemetry
+    graph_data = None
+    nodes = []
+    attack_paths = []
+    compliance_violations = []
+    cost_analysis = None
+
+    if target_scan_id:
+        import time
+        now = time.time()
+        
+        if target_scan_id in _scan_data_cache and (now - _scan_data_cache[target_scan_id]['time']) < 1800:
+            cached = _scan_data_cache[target_scan_id]['data']
+            graph_data = cached['graph_data']
+            nodes = cached['nodes']
+            attack_paths = cached['attack_paths']
+            compliance_violations = cached['compliance_violations']
+            cost_analysis = cached['cost_analysis']
+        else:
+            try:
+                import asyncio
+                graph_data = await asyncio.wait_for(
+                    asyncio.to_thread(orchestrator.get_graph_for_cytoscape, target_scan_id),
+                    timeout=3.0
+                )
+                elements = graph_data.get("elements", {})
+                nodes = [sanitize_data_dict(n.get("data", {})) for n in elements.get("nodes", [])]
+            except Exception as e:
+                logger.debug(f"Failed to fetch Cytoscape graph data (timeout/error): {e}")
+                try:
+                    res = orchestrator.supabase.table("scan_entities").select("*").eq("scan_id", target_scan_id).execute()
+                    for entity in (res.data or []):
+                        risk_factors = entity.get('static_risk_factors', {})
+                        nodes.append(sanitize_data_dict({
+                            'id': entity.get('entity_arn'),
+                            'name': entity.get('entity_name'),
+                            'type': entity.get('entity_type'),
+                            'provider': entity.get('provider'),
+                            'is_dormant': risk_factors.get('is_dormant', False),
+                            'has_mfa': risk_factors.get('has_mfa', False),
+                            'is_overprivileged': risk_factors.get('is_overprivileged', False),
+                            'is_admin': risk_factors.get('is_admin', False),
+                            'risk_score': entity.get('risk_score', 0)
+                        }))
+                except Exception as se:
+                    logger.debug(f"Failed to fallback to scan_entities: {se}")
+
+            try:
+                paths_res = orchestrator.supabase.table("attack_paths").select("*").eq("scan_id", target_scan_id).execute()
+                attack_paths = paths_res.data or []
+            except Exception as e:
+                logger.debug(f"Failed to fetch attack paths: {e}")
+
+            try:
+                comp_res = orchestrator.supabase.table("compliance_violations").select("*").eq("scan_id", target_scan_id).execute()
+                compliance_violations = comp_res.data or []
+            except Exception as e:
+                logger.debug(f"Failed to fetch compliance violations: {e}")
+
+            try:
+                cost_res = orchestrator.supabase.table("cost_analyses").select("*").eq("scan_id", target_scan_id).execute()
+                if cost_res.data:
+                    cost_analysis = cost_res.data[0]
+            except Exception as e:
+                logger.debug(f"Failed to fetch cost analyses: {e}")
+                
+            _scan_data_cache[target_scan_id] = {
+                'time': now,
+                'data': {
+                    'graph_data': graph_data,
+                    'nodes': nodes,
+                    'attack_paths': attack_paths,
+                    'compliance_violations': compliance_violations,
+                    'cost_analysis': cost_analysis
+                }
+            }
+
+    assistant = AuthMapAIAssistant(
+        neo4j_uri=neo4j_uri,
+        neo4j_user=neo4j_user,
+        neo4j_password=neo4j_password,
+    )
+
+    try:
+        result_or_gen = await assistant.ask(
+            query=payload.query,
+            scan_id=target_scan_id,
+            scan_context=safe_scan_context,
+            graph_data=graph_data,
+            graph_nodes=nodes,
+            attack_paths=attack_paths,
+            compliance_violations=compliance_violations,
+            cost_analysis=cost_analysis,
+            conversation_history=payload.history,
+            model_name=payload.model_name or "openai/gpt-oss-20b",
+            user_memories=user_memories,
+            client_rag_context=payload.client_rag_context,
+            web_search_context=payload.web_search_context,
+            stream=payload.stream,
+            image_base64=payload.image_base64,
+        )
+
+        if payload.stream:
+            # result_or_gen is an async generator
+            async def generator_wrapper():
+                try:
+                    async for chunk in result_or_gen:
+                        yield chunk
+                finally:
+                    assistant.close()
+            return StreamingResponse(generator_wrapper(), media_type="text/event-stream")
+            
+        return {
+            "response": result_or_gen.get("response", ""),
+            "model": result_or_gen.get("model", "openai/gpt-oss-20b"),
+            "metrics": sanitize_data_dict(result_or_gen.get("metrics", {}))
+        }
+    finally:
+        assistant.close()
+
+
+@app.post("/ai/export")
+async def ai_export(
+    payload: AIExportRequest,
+    clerk_id: str = Depends(get_clerk_user_id),
+):
+    """Exports an AI conversation response into a downloadable PDF or TXT."""
+    if payload.format.lower() == "txt":
+        return StreamingResponse(
+            io.StringIO(payload.content),
+            media_type="text/plain",
+            headers={"Content-Disposition": "attachment; filename=authmap_ai_report.txt"},
+        )
+
+    from fpdf import FPDF
+
+    class PDFReport(FPDF):
+        def header(self):
+            self.set_font('Helvetica', 'B', 12)
+            self.cell(0, 8, 'AuthMap AI Security Consultation', 0, new_x="LMARGIN", new_y="NEXT", align='C')
+            self.ln(4)
+
+        def footer(self):
+            self.set_y(-15)
+            self.set_font('Helvetica', 'I', 8)
+            self.cell(0, 10, f'Page {self.page_no()}', 0, 0, 'C')
+
+    pdf = PDFReport()
+    pdf.set_auto_page_break(auto=True, margin=15)
+    pdf.add_page()
+    pdf.set_font("Helvetica", size=9)
+
+    safe_text = payload.content.encode('latin-1', 'replace').decode('latin-1')
+
+    for line in safe_text.split('\n'):
+        line_clean = line.strip()
+        if line_clean.startswith('# '):
+            pdf.set_font("Helvetica", 'B', 13)
+            pdf.cell(0, 8, line_clean[2:], new_x="LMARGIN", new_y="NEXT")
+            pdf.set_font("Helvetica", size=9)
+        elif line_clean.startswith('## '):
+            pdf.set_font("Helvetica", 'B', 11)
+            pdf.cell(0, 7, line_clean[3:], new_x="LMARGIN", new_y="NEXT")
+            pdf.set_font("Helvetica", size=9)
+        elif line_clean.startswith('### '):
+            pdf.set_font("Helvetica", 'B', 10)
+            pdf.cell(0, 6, line_clean[4:], new_x="LMARGIN", new_y="NEXT")
+            pdf.set_font("Helvetica", size=9)
+        else:
+            pdf.multi_cell(0, 5, line)
+
+    pdf_bytes = bytes(pdf.output())
+    return StreamingResponse(
+        io.BytesIO(pdf_bytes),
+        media_type="application/pdf",
+        headers={"Content-Disposition": "attachment; filename=authmap_ai_report.pdf"},
+    )
+

@@ -1,5 +1,6 @@
 import json
 import logging
+from datetime import datetime
 import psycopg2
 from psycopg2 import pool
 from psycopg2.extras import RealDictCursor, execute_values
@@ -36,6 +37,10 @@ class SupabaseQueryBuilder:
         self._where[column] = value
         return self
 
+    def in_(self, column, values):
+        self._where[column] = {"$in": values}
+        return self
+
     def order(self, column, desc=False):
         self._order_by = f"{column} {'DESC' if desc else 'ASC'}"
         return self
@@ -58,8 +63,12 @@ class SupabaseQueryBuilder:
                     if self._where:
                         conds = []
                         for k, v in self._where.items():
-                            conds.append(f"{k} = %s")
-                            params.append(v)
+                            if isinstance(v, dict) and "$in" in v:
+                                conds.append(f"{k} = ANY(%s)")
+                                params.append(list(v["$in"]))
+                            else:
+                                conds.append(f"{k} = %s")
+                                params.append(v)
                         query += " WHERE " + " AND ".join(conds)
                     if self._order_by:
                         query += f" ORDER BY {self._order_by}"
@@ -141,8 +150,12 @@ class SupabaseQueryBuilder:
                     if self._where:
                         conds = []
                         for k, v in self._where.items():
-                            conds.append(f"{k} = %s")
-                            params.append(v)
+                            if isinstance(v, dict) and "$in" in v:
+                                conds.append(f"{k}::text = ANY(%s::text[])")
+                                params.append(list(v["$in"]))
+                            else:
+                                conds.append(f"{k}::text = %s::text")
+                                params.append(v)
                         query += " WHERE " + " AND ".join(conds)
                         
                     query += " RETURNING *"
@@ -165,3 +178,154 @@ class PostgresClient:
         
     def table(self, table_name: str) -> SupabaseQueryBuilder:
         return SupabaseQueryBuilder(self, table_name)
+
+    def prune_expired_conversations(self) -> int:
+        """Deletes any conversations that have passed their 48-hour expiration window."""
+        conn = self.pool.getconn()
+        try:
+            with conn.cursor() as cur:
+                cur.execute("DELETE FROM ai_conversations WHERE expires_at <= NOW()")
+                deleted_count = cur.rowcount
+                conn.commit()
+                return deleted_count
+        except Exception as e:
+            conn.rollback()
+            logger.warning(f"Error pruning expired conversations: {e}")
+            return 0
+        finally:
+            self.pool.putconn(conn)
+
+    def get_user_conversations(self, clerk_id: str) -> list:
+        """Retrieves all active (<=48hr) conversations for the user and prunes expired ones."""
+        self.prune_expired_conversations()
+        conn = self.pool.getconn()
+        try:
+            with conn.cursor(cursor_factory=RealDictCursor) as cur:
+                cur.execute("""
+                    SELECT id, title, messages, model_used, created_at, updated_at, expires_at
+                    FROM ai_conversations
+                    WHERE clerk_id = %s AND expires_at > NOW()
+                    ORDER BY updated_at DESC
+                """, (clerk_id,))
+                rows = cur.fetchall()
+                results = []
+                for r in rows:
+                    item = dict(r)
+                    if isinstance(item.get("created_at"), datetime):
+                        item["createdAt"] = int(item["created_at"].timestamp() * 1000)
+                    elif isinstance(item.get("updated_at"), datetime):
+                        item["createdAt"] = int(item["updated_at"].timestamp() * 1000)
+                    else:
+                        item["createdAt"] = int(datetime.utcnow().timestamp() * 1000)
+                    results.append(item)
+                return results
+        except Exception as e:
+            logger.error(f"Failed to fetch user conversations: {e}")
+            return []
+        finally:
+            self.pool.putconn(conn)
+
+    def upsert_conversation(self, clerk_id: str, conv_id: str, title: str, messages: list, model_used: str = "openai/gpt-oss-20b") -> dict:
+        """Saves or updates a conversation, refreshing its 48-hour TTL window."""
+        conn = self.pool.getconn()
+        try:
+            with conn.cursor(cursor_factory=RealDictCursor) as cur:
+                cur.execute("""
+                    INSERT INTO ai_conversations (id, clerk_id, title, messages, model_used, created_at, updated_at, expires_at)
+                    VALUES (%s, %s, %s, %s, %s, NOW(), NOW(), NOW() + INTERVAL '48 hours')
+                    ON CONFLICT (id) DO UPDATE SET
+                        title = EXCLUDED.title,
+                        messages = EXCLUDED.messages,
+                        model_used = EXCLUDED.model_used,
+                        updated_at = NOW(),
+                        expires_at = NOW() + INTERVAL '48 hours'
+                    RETURNING *;
+                """, (conv_id, clerk_id, title, psycopg2.extras.Json(messages), model_used))
+                conn.commit()
+                row = cur.fetchone()
+                return dict(row) if row else {}
+        except Exception as e:
+            conn.rollback()
+            logger.error(f"Failed to upsert conversation {conv_id}: {e}")
+            raise e
+        finally:
+            self.pool.putconn(conn)
+
+    def delete_conversation(self, clerk_id: str, conv_id: str) -> bool:
+        """Deletes a specific conversation owned by the user."""
+        conn = self.pool.getconn()
+        try:
+            with conn.cursor() as cur:
+                cur.execute("DELETE FROM ai_conversations WHERE id = %s AND clerk_id = %s", (conv_id, clerk_id))
+                conn.commit()
+                return cur.rowcount > 0
+        except Exception as e:
+            conn.rollback()
+            logger.error(f"Failed to delete conversation {conv_id}: {e}")
+            return False
+        finally:
+            self.pool.putconn(conn)
+
+    # ── Long-Term User & Org Memory Methods ──────────────────────────
+    def get_user_memories(self, clerk_id: str) -> list:
+        """Fetches all persistent memory notes for the user's organization."""
+        conn = self.pool.getconn()
+        try:
+            with conn.cursor(cursor_factory=RealDictCursor) as cur:
+                cur.execute("""
+                    SELECT id, key, content, category, source, created_at, updated_at
+                    FROM ai_user_memories
+                    WHERE clerk_id = %s
+                    ORDER BY updated_at DESC
+                """, (clerk_id,))
+                rows = cur.fetchall()
+                return [dict(r) for r in rows]
+        except Exception as e:
+            logger.error(f"Failed to fetch user memories: {e}")
+            return []
+        finally:
+            self.pool.putconn(conn)
+
+    def upsert_user_memory(self, clerk_id: str, key: str, content: str, category: str = "general", source: str = "user_defined") -> dict:
+        """Adds or updates a persistent memory note for the organization."""
+        conn = self.pool.getconn()
+        try:
+            with conn.cursor(cursor_factory=RealDictCursor) as cur:
+                cur.execute("""
+                    INSERT INTO ai_user_memories (clerk_id, key, content, category, source, created_at, updated_at)
+                    VALUES (%s, %s, %s, %s, %s, NOW(), NOW())
+                    ON CONFLICT (clerk_id, key) DO UPDATE SET
+                        content = EXCLUDED.content,
+                        category = EXCLUDED.category,
+                        source = EXCLUDED.source,
+                        updated_at = NOW()
+                    RETURNING *;
+                """, (clerk_id, key.strip().lower().replace(" ", "_"), content.strip(), category, source))
+                conn.commit()
+                row = cur.fetchone()
+                return dict(row) if row else {}
+        except Exception as e:
+            conn.rollback()
+            logger.error(f"Failed to upsert memory for {clerk_id}: {e}")
+            raise e
+        finally:
+            self.pool.putconn(conn)
+
+    def delete_user_memory(self, clerk_id: str, key_or_id: str) -> bool:
+        """Deletes a persistent memory note by key or uuid."""
+        conn = self.pool.getconn()
+        try:
+            with conn.cursor() as cur:
+                cur.execute("""
+                    DELETE FROM ai_user_memories
+                    WHERE clerk_id = %s AND (key = %s OR id::text = %s)
+                """, (clerk_id, key_or_id, key_or_id))
+                conn.commit()
+                return cur.rowcount > 0
+        except Exception as e:
+            conn.rollback()
+            logger.error(f"Failed to delete memory {key_or_id}: {e}")
+            return False
+        finally:
+            self.pool.putconn(conn)
+
