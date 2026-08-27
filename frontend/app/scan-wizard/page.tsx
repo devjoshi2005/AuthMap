@@ -973,7 +973,7 @@ done`}
                 <div className="space-y-4 rounded-xl border border-white/10 bg-white/[0.03] p-5">
                   <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-1 min-w-0">
                     <p className="font-[family:var(--font-plex-mono)] text-[0.65rem] font-medium uppercase tracking-[0.2em] text-slate-400 shrink-0">
-                      Scan Progress
+                      Scan Progress (may take few mins)
                     </p>
                     <span className="text-[0.7rem] font-mono text-slate-500 break-all">ID #{scanStatus.scan_id}</span>
                   </div>

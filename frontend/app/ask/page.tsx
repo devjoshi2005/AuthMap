@@ -1017,10 +1017,10 @@ export default function AskPage() {
             <div className="relative">
               <button
                 onClick={() => setModelDropdownOpen(!modelDropdownOpen)}
-                className="group flex items-center gap-2 rounded-xl px-3 py-1.5 text-sm font-semibold text-white/90 transition hover:bg-white/[0.08] hover:text-white"
+                className="group flex items-center gap-1.5 sm:gap-2 rounded-xl px-2 sm:px-3 py-1.5 text-sm font-semibold text-white/90 transition hover:bg-white/[0.08] hover:text-white"
               >
-                <span>{activeModelObj.name}</span>
-                <span className="text-xs font-normal text-[#8e8e8e]">
+                <span className="truncate max-w-[100px] sm:max-w-none">{activeModelObj.name}</span>
+                <span className="hidden sm:inline text-xs font-normal text-[#8e8e8e]">
                   ({activeModelObj.version.split(" ")[0]})
                 </span>
                 <ChevronDown
@@ -1082,7 +1082,7 @@ export default function AskPage() {
           <div className="flex items-center gap-2">
             {/* Client-Side Neural RAG Status Badge */}
             <div
-              className="flex items-center gap-1.5 rounded-xl border border-white/10 bg-[#262626] px-2.5 py-1.5 text-xs text-[#ececec] shadow-sm"
+              className="hidden sm:flex items-center gap-1.5 rounded-xl border border-white/10 bg-[#262626] px-2.5 py-1.5 text-xs text-[#ececec] shadow-sm"
               title={`Client-Side Neural RAG (${ragStatus?.isReady ? "Ready" : "Active"} - ${ragStatus?.totalVectors || 0} vectors in IndexedDB)`}
             >
               <Database className="h-3.5 w-3.5 text-emerald-400" />
@@ -1113,11 +1113,11 @@ export default function AskPage() {
                 setMemoryModalOpen(true);
                 fetchMemories();
               }}
-              className="flex items-center gap-2 rounded-xl border border-white/10 bg-[#2f2f2f] px-3 py-1.5 text-xs font-medium text-[#ececec] transition hover:bg-[#383838] hover:border-white/20 shadow-sm"
+              className="flex items-center gap-1.5 sm:gap-2 rounded-xl border border-white/10 bg-[#2f2f2f] px-2.5 sm:px-3 py-1.5 text-xs font-medium text-[#ececec] transition hover:bg-[#383838] hover:border-white/20 shadow-sm"
               title="Manage AI Memory Context"
             >
               <Brain className="h-3.5 w-3.5 text-[#8e8e8e]" />
-              <span>Memory</span>
+              <span className="hidden sm:inline">Memory</span>
               {memories.length > 0 && (
                 <span className="flex h-4 min-w-[1rem] items-center justify-center rounded-full bg-white/15 px-1 text-[0.6rem] font-semibold text-white">
                   {memories.length}
@@ -1138,9 +1138,10 @@ export default function AskPage() {
 
             <Link
               href="/welcome"
-              className="rounded-lg border border-white/10 bg-[#2f2f2f] px-3 py-1.5 text-xs font-medium text-[#ececec] transition hover:bg-[#383838]"
+              className="rounded-lg border border-white/10 bg-[#2f2f2f] px-2.5 sm:px-3 py-1.5 text-xs font-medium text-[#ececec] transition hover:bg-[#383838]"
             >
-              Exit
+              <span className="hidden sm:inline">Exit</span>
+              <span className="sm:hidden">X</span>
             </Link>
           </div>
         </header>

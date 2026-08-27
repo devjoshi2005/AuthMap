@@ -7,7 +7,7 @@ export async function POST(req: NextRequest) {
     const body = await req.json();
 
     // Use configured environment backend URL first, fallback to dev local server if unreachable
-    const envBackend = process.env.BACKEND_URL || process.env.NEXT_PUBLIC_BACKEND_URL;
+    const envBackend = process.env.NEXT_PUBLIC_BACKEND_URL;
     const candidates = (process.env.NODE_ENV === "development"
       ? ["http://localhost:8000", envBackend, "http://127.0.0.1:8000"]
       : [envBackend, "http://localhost:8000", "http://127.0.0.1:8000"]).filter(Boolean) as string[];
