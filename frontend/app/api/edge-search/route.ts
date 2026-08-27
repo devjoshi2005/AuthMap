@@ -42,8 +42,8 @@ export async function POST(req: NextRequest) {
     });
 
     if (!response.ok) {
-      console.warn("Edge web search failed with status:", response.status);
-      return NextResponse.json({ results: [] }, { status: 500 });
+      console.warn(`Edge web search blocked by provider (Status: ${response.status}). Falling back to local RAG only.`);
+      return NextResponse.json({ results: [] }, { status: 200 });
     }
 
     const html = await response.text();
