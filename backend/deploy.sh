@@ -18,21 +18,26 @@ with open("env.yaml", "w") as f:
         if v is not None:
             f.write(f"{k}: {json.dumps(v)}\n")
 '
+    ENV_ARGS="--env-vars-file=env.yaml"
+else
+    ENV_ARGS=""
 fi
 
 # Deploy from source using the local Dockerfile
 # We allocate 2Gi of RAM to prevent OOM errors with scikit-learn and node2vec
-# max-instances=2 prevents accidental billing spikes
+# max-instances=10 prevents accidental billing spikes while handling load safely
 gcloud run deploy authmap-backend \
   --source . \
   --region us-central1 \
   --allow-unauthenticated \
   --memory 2Gi \
   --cpu 1 \
-  --env-vars-file=env.yaml \
+  $ENV_ARGS \
   --min-instances 1 \
   --max-instances 10 \
   --port 8080
 
 # Clean up temporary yaml
-rm -f env.yaml
+if [ -f env.yaml ]; then
+    rm -f env.yaml
+fi
