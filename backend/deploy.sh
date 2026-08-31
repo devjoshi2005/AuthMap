@@ -30,7 +30,7 @@ gcloud run deploy authmap-backend \
   --memory 2Gi \
   --cpu 1 \
   --env-vars-file=env.yaml \
-  --min-instances 0 \
+  --min-instances 1 \
   --max-instances 10 \
   --port 8080
 
