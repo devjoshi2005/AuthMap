@@ -35,7 +35,7 @@ gcloud run deploy authmap-backend \
   $ENV_ARGS \
   --min-instances 1 \
   --max-instances 10 \
-  --port 8080
+  --port 8000
 
 # Clean up temporary yaml
 if [ -f env.yaml ]; then
