@@ -5,6 +5,8 @@
 
 Technical Report : [Technical Report](https://github.com/devjoshi2005/AuthMap/blob/main/technicalreport.md)
 
+[Video](https://github.com/user-attachments/assets/93108ef7-f17b-4b82-b059-e4cf3a38c717)
+
 
 
 
