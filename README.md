@@ -6,7 +6,7 @@
 Technical Report : [Technical Report](https://github.com/devjoshi2005/AuthMap/blob/main/technicalreport.md)
 Business Report : [Business Report](https://github.com/devjoshi2005/AuthMap/blob/main/businessreport.md)
 
-For practical demo, visit : [AuthMap](https://authmap.vercel.app/)
+
 
 ---
 <img width="1201" height="691" alt="Image" src="https://github.com/user-attachments/assets/6ff00e55-301f-4fde-babc-684703566495" />
