@@ -4,7 +4,7 @@
 
 
 Technical Report : [Technical Report](https://github.com/devjoshi2005/AuthMap/blob/main/technicalreport.md)
-Business Report : [Business Report](https://github.com/devjoshi2005/AuthMap/blob/main/businessreport.md)
+
 
 
 
