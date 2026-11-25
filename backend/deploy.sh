@@ -25,6 +25,7 @@ fi
 
 # Deploy from source using the local Dockerfile
 # We allocate 2Gi of RAM to prevent OOM errors with scikit-learn and node2vec
+# min-instances=0 scales to zero when idle (no always-on cost, ~20-40s cold start)
 # max-instances=10 prevents accidental billing spikes while handling load safely
 gcloud run deploy authmap-backend \
   --source . \
@@ -33,8 +34,9 @@ gcloud run deploy authmap-backend \
   --memory 2Gi \
   --cpu 1 \
   $ENV_ARGS \
-  --min-instances 1 \
+  --min-instances 0 \
   --max-instances 10 \
+  --cpu-boost \
   --port 8000
 
 # Clean up temporary yaml
