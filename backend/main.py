@@ -5,6 +5,7 @@ import csv
 import json
 import logging,traceback
 import hashlib
+import re
 from typing import Optional, List, Dict, Any
 
 from fastapi import FastAPI, HTTPException, Depends, BackgroundTasks, Request
@@ -241,9 +242,57 @@ async def health_check():
     return {"status": "ok", "service": "AuthMap API"}
 
 
+_backend_principal_cache: Optional[str] = None
+
+
+def get_backend_principal_arn() -> Optional[str]:
+    """AWS principal that is allowed to assume customer scanner roles.
+
+    This must be the *AuthMap backend's* identity, not the account being
+    scanned, otherwise cross-account role assumption is impossible.
+    """
+    global _backend_principal_cache
+    if _backend_principal_cache:
+        return _backend_principal_cache
+
+    configured = os.getenv("AUTHMAP_CALLER_PRINCIPAL_ARN", "").strip()
+    if configured:
+        _backend_principal_cache = configured
+        return configured
+
+    try:
+        import boto3
+        account_id = boto3.client("sts").get_caller_identity()["Account"]
+    except Exception:
+        logger.exception("Unable to resolve the AuthMap backend AWS identity")
+        return None
+
+    _backend_principal_cache = f"arn:aws:iam::{account_id}:root"
+    return _backend_principal_cache
+
+
+def scanner_role_name(external_id: str) -> str:
+    """Deterministic, collision-resistant role name (max 64 chars)."""
+    cleaned = re.sub(r"[^A-Za-z0-9+=,.@_-]", "", external_id or "")
+    suffix = cleaned[-8:] if len(cleaned) > 8 else cleaned
+    return f"AuthMap-Scanner-{(suffix or 'default')[:32]}"
+
+
 @app.get("/aws/cloudformation")
-def get_aws_cloudformation(external_id: str, account_id: str):
-    """Returns a CloudFormation template to create the cross-account IAM role."""
+def get_aws_cloudformation(external_id: str, account_id: str = ""):
+    """Returns a CloudFormation template to create the cross-account IAM role.
+
+    `account_id` is the customer account being scanned (kept for compatibility
+    and labelling only). The trust policy points at the AuthMap backend, so the
+    same template works for any target account.
+    """
+    principal = get_backend_principal_arn()
+    if not principal:
+        return JSONResponse(
+            status_code=503,
+            content={"detail": "AuthMap backend AWS identity is not configured; cannot build a trust policy."},
+        )
+
     policy_str = os.getenv("AWS_SCANNER_IAM_POLICY", "{}")
     try:
         policy_json = json.loads(policy_str) if policy_str else {}
@@ -257,14 +306,14 @@ def get_aws_cloudformation(external_id: str, account_id: str):
             "AuthMapScannerRole": {
                 "Type": "AWS::IAM::Role",
                 "Properties": {
-                    "RoleName": f"AuthMap-Scanner-{external_id[:8]}",
+                    "RoleName": scanner_role_name(external_id),
                     "AssumeRolePolicyDocument": {
                         "Version": "2012-10-17",
                         "Statement": [
                             {
                                 "Effect": "Allow",
                                 "Principal": {
-                                    "AWS": f"arn:aws:iam::{account_id}:root"
+                                    "AWS": principal
                                 },
                                 "Action": "sts:AssumeRole",
                                 "Condition": {

@@ -651,7 +651,7 @@ export default function ScanWizardPage() {
                     placeholder="123456789012"
                     className="mt-1.5 w-full rounded-xl border border-white/10 bg-black/40 px-4 py-3 text-sm text-white outline-none placeholder:text-slate-500 focus:border-[var(--accent-cyan)]/40"
                   />
-                  <p className="mt-1.5 text-xs text-slate-500">12-digit number (used to generate the trust policy for your CloudFormation stack)</p>
+                  <p className="mt-1.5 text-xs text-slate-500">12-digit ID of the account you are scanning. The role trusts AuthMap&apos;s backend, so the same template works for any account.</p>
                 </div>
 
                 <div className="flex flex-col sm:flex-row gap-3">
