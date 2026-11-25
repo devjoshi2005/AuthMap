@@ -1,0 +1,20 @@
+# Never bake credentials or local cloud config into the image
+.env
+.env.*
+*.env
+env.yaml
+collectors/.aws
+collectors/.gcp
+*.pem
+*.key
+*.p12
+.git
+.gitignore
+.gcloudignore
+.dockerignore
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+.DS_Store
+*.log
