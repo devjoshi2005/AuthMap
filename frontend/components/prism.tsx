@@ -70,8 +70,16 @@ const Prism: React.FC<PrismProps> = ({
     const FRAME_INTERVAL = targetFps > 0 ? 1000 / Math.min(60, Math.max(12, targetFps)) : 0;
     const dpr = Math.min(MAX_DPR, window.devicePixelRatio || 1);
 
-    const renderer = new Renderer({ dpr, alpha: transparent, antialias: false });
+    let renderer: Renderer;
+    try {
+      renderer = new Renderer({ dpr, alpha: transparent, antialias: false });
+    } catch {
+      return;
+    }
     const gl = renderer.gl;
+    if (!gl) {
+      return;
+    }
     gl.disable(gl.DEPTH_TEST);
     gl.disable(gl.CULL_FACE);
     gl.disable(gl.BLEND);

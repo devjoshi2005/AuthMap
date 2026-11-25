@@ -410,7 +410,16 @@ export const GridScan = ({
     const container = containerRef.current;
     if (!container) return;
 
-    const renderer = new THREE.WebGLRenderer({ antialias: false, alpha: false, powerPreference: "high-performance" });
+    let renderer: THREE.WebGLRenderer;
+    try {
+      renderer = new THREE.WebGLRenderer({ antialias: false, alpha: false, powerPreference: "high-performance" });
+    } catch {
+      return;
+    }
+    if (!renderer.getContext()) {
+      renderer.dispose();
+      return;
+    }
     rendererRef.current = renderer;
     renderer.setPixelRatio(1);
     renderer.setSize(container.clientWidth, container.clientHeight);
