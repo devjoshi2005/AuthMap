@@ -27,16 +27,18 @@ const nextConfig: NextConfig = {
 		];
 	},
 	async headers() {
+		const clerkHosts = "https://*.clerk.accounts.dev https://clerk.com";
+
 		const cspDirectives = [
-			"default-src 'self' https://*.clerk.accounts.dev https://clerk.com",
-			"script-src 'self' 'unsafe-eval' 'unsafe-inline' 'wasm-unsafe-eval' https://*.clerk.accounts.dev https://clerk.com https://challenges.cloudflare.com https://cdn.jsdelivr.net https://cdnjs.cloudflare.com",
+			`default-src 'self' ${clerkHosts}`,
+			`script-src 'self' 'unsafe-eval' 'unsafe-inline' 'wasm-unsafe-eval' ${clerkHosts} https://challenges.cloudflare.com https://cdn.jsdelivr.net https://cdnjs.cloudflare.com`,
 			"worker-src 'self' blob:",
-			"connect-src 'self' http://localhost:* http://127.0.0.1:* ws://localhost:* ws://127.0.0.1:* https://*.run.app https://authmap-backend-416290518702.us-central1.run.app https://*.clerk.accounts.dev https://clerk.com https://challenges.cloudflare.com https://*.supabase.co https://api.groq.com https://huggingface.co https://*.huggingface.co https://cdn-lfs.huggingface.co https://raw.githubusercontent.com https://*.xenova.com https://cdn.jsdelivr.net https://cdnjs.cloudflare.com",
+			`connect-src 'self' http://localhost:* http://127.0.0.1:* ws://localhost:* ws://127.0.0.1:* https://*.run.app https://authmap-backend-416290518702.us-central1.run.app ${clerkHosts} https://clerk-telemetry.com https://challenges.cloudflare.com https://*.supabase.co https://api.groq.com https://huggingface.co https://*.huggingface.co https://cdn-lfs.huggingface.co https://raw.githubusercontent.com https://*.xenova.com https://cdn.jsdelivr.net https://cdnjs.cloudflare.com`,
 			"img-src 'self' data: blob: https://img.clerk.com https://images.unsplash.com",
 			"style-src 'self' 'unsafe-inline' https://cdn.jsdelivr.net https://cdnjs.cloudflare.com",
 			"font-src 'self' data: https://cdn.jsdelivr.net",
 			"object-src 'none'",
-			"frame-src 'self' https://challenges.cloudflare.com https://*.clerk.accounts.dev https://clerk.com",
+			`frame-src 'self' https://challenges.cloudflare.com ${clerkHosts}`,
 			"frame-ancestors 'none'",
 			"base-uri 'self'",
 			"form-action 'self'",
