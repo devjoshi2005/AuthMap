@@ -184,9 +184,20 @@ export default function ScanWizardPage() {
           if (!token) return; // Wait until token is available to avoid 401 Unauthorized errors
           
           const backendUrl = process.env.NODE_ENV === "development" ? "http://localhost:8000" : process.env.NEXT_PUBLIC_BACKEND_URL;
-          const res = await fetch(`${backendUrl}/scan/status/${scanId}`, {
+          const statusUrl = `${backendUrl}/scan/status/${scanId}`;
+          let res = await fetch(statusUrl, {
             headers: { Authorization: `Bearer ${token}` },
           });
+          if (res.status === 401) {
+            // Clerk session tokens are short-lived; force a refresh and retry once
+            // so a stale token never freezes the progress UI.
+            const freshToken = await getToken({ skipCache: true });
+            if (freshToken) {
+              res = await fetch(statusUrl, {
+                headers: { Authorization: `Bearer ${freshToken}` },
+              });
+            }
+          }
           if (res.ok) {
             const data = await res.json();
             setScanStatus((prev) => ({
