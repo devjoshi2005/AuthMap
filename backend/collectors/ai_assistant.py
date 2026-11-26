@@ -20,6 +20,14 @@ from collectors.ai_security_guardrails import (
     security_processing_enabled,
 )
 from collectors.image_guardrail import extract_text_from_base64
+from collectors.ai_context import (
+    MODEL_TEXT,
+    MODEL_VISION,
+    budget_context,
+    format_memory_lines,
+    resolve_text_model,
+    truncate_text,
+)
 from collectors.transit_encryption import TransitObfuscator
 
 logger = logging.getLogger(__name__)
@@ -64,28 +72,21 @@ def sanitize_data_dict(data: Any) -> Any:
         return [sanitize_data_dict(v) for v in data]
     return data
 
+# Consultant answers are pinned to 120b: 20b returned blank completions for
+# even small prompts. Vision requests use MODEL_VISION instead.
 CURATED_PRODUCTION_MODELS = {
-    "balanced": "openai/gpt-oss-20b",
-    "complex": "openai/gpt-oss-120b",
-    "openai/gpt-oss-20b": "openai/gpt-oss-20b",
-    "openai/gpt-oss-120b": "openai/gpt-oss-120b",
+    "balanced": MODEL_TEXT,
+    "complex": MODEL_TEXT,
+    "openai/gpt-oss-20b": MODEL_TEXT,
+    "openai/gpt-oss-120b": MODEL_TEXT,
 }
 
-DEFAULT_PRODUCTION_MODEL = "openai/gpt-oss-20b"
+DEFAULT_PRODUCTION_MODEL = MODEL_TEXT
+
 
 def resolve_curated_model(requested_model: Optional[str]) -> str:
-    """Resolves model from user's manual choice:
-    - Balanced (Default): openai/gpt-oss-20b
-    - Complex: openai/gpt-oss-120b
-    """
-    if not requested_model:
-        return DEFAULT_PRODUCTION_MODEL
-    clean = requested_model.strip().lower()
-    if clean in CURATED_PRODUCTION_MODELS:
-        return CURATED_PRODUCTION_MODELS[clean]
-    if "120b" in clean or "complex" in clean or "deep" in clean:
-        return "openai/gpt-oss-120b"
-    return DEFAULT_PRODUCTION_MODEL
+    """All text requests resolve to the constant 120b consultant model."""
+    return resolve_text_model(requested_model)
 
 class AuthMapAIAssistant:
     def __init__(
@@ -161,7 +162,7 @@ class AuthMapAIAssistant:
 
         try:
             kwargs = {
-                "model": "openai/gpt-oss-20b",
+                "model": MODEL_TEXT,
                 "messages": [{"role": "user", "content": cypher_prompt}],
                 "response_format": {"type": "json_object"},
                 "temperature": 0.0,
@@ -193,9 +194,18 @@ class AuthMapAIAssistant:
                 return None, []
 
         try:
-            parsed = json.loads(raw_cypher)
+            parsed = json.loads(raw_cypher or "{}")
             cypher = str(parsed.get("cypher", "")).strip()
             cypher = obfuscator.unmask_text(cypher)
+
+            if not cypher:
+                # Deterministic fallback so GraphRAG never silently returns nothing.
+                cypher = (
+                    "MATCH (n) WHERE ($scan_id IS NULL OR n.scan_id = $scan_id) "
+                    "OPTIONAL MATCH (n)-[r]->(m) "
+                    "RETURN coalesce(n.name, n.id) AS source, type(r) AS relation, "
+                    "coalesce(m.name, m.id) AS target LIMIT 25"
+                )
 
             # Rigorous AST & Read-Only Safety Validation
             is_safe, validation_msg = validate_cypher_query(cypher)
@@ -321,21 +331,18 @@ class AuthMapAIAssistant:
 
         # 0. User & Organization Long-Term Memory (High-density persistent custom context)
         if user_memories and len(user_memories) > 0:
-            memory_lines = []
-            # Sort by updated_at or id implicitly, but just take the most recent 15
-            for mem in user_memories[-15:]:
-                cat = str(mem.get("category", "general")).replace("_", " ").title()
-                key = str(mem.get("key", "")).replace("_", " ").title()
-                content = str(mem.get("content", "")).strip()
-                if content:
-                    clean_content = redact_sensitive_credentials(content)
-                    memory_lines.append(f"- **{cat}** ({key}): {clean_content}")
+            memory_lines = [
+                redact_sensitive_credentials(line)
+                for line in format_memory_lines(user_memories)
+            ]
             if memory_lines:
                 memory_block = armor_context_block("persistent_user_and_org_memory", "\n".join(memory_lines), {"scope": "organization_context"})
                 context_parts.append(memory_block)
 
         # 1. Primary Source of Truth: Supabase Live Scan Telemetry, Chosen Inputs & Compliances
-        redacted_ground_truth = redact_sensitive_credentials(ground_truth_markdown)
+        redacted_ground_truth = truncate_text(
+            redact_sensitive_credentials(ground_truth_markdown), 7000
+        )
         context_parts.append(
             armor_context_block(
                 "supabase_source_of_truth",
@@ -349,9 +356,14 @@ class AuthMapAIAssistant:
             formatted_records = []
             for rec in graph_data_res[:8]:
                 if isinstance(rec, dict):
-                    formatted_records.append(", ".join(f"{k}: {v}" for k, v in rec.items() if v is not None))
+                    formatted_records.append(
+                        truncate_text(
+                            ", ".join(f"{k}: {v}" for k, v in rec.items() if v is not None),
+                            400,
+                        )
+                    )
                 else:
-                    formatted_records.append(str(rec))
+                    formatted_records.append(truncate_text(rec, 400))
             cypher_block = (
                 f"- Executed Read-Only Cypher Query: `{executed_cypher}`\n"
                 f"- Graph Path Traversal Findings:\n  • " + "\n  • ".join(formatted_records)
@@ -409,7 +421,7 @@ class AuthMapAIAssistant:
             web_text = "\n".join([f"- **{r['title']}**: {r['snippet'][:180]} [Source]({r.get('url', '')})" for r in web_results[:3]])
             context_parts.append(armor_context_block("untrusted_web_intelligence", web_text, {"source": "live_web_feed"}))
 
-        combined_context = "\n\n".join(context_parts)
+        combined_context = budget_context(context_parts)
 
         system_prompt = f"""You are the **AuthMap AI Chief Information Security Officer (CISO) & Multi-Cloud IAM Security Consultant**, an authority on Multi-Cloud IAM Security, Graph Privilege Escalation, and Global Governance & Compliance.
 
@@ -477,13 +489,11 @@ SECURITY & INTEGRITY META-GUARDRAILS:
                     }
                 ]
             })
-            active_model = "qwen/qwen3.6-27b"
+            active_model = MODEL_VISION
             models_to_try = [active_model]
         else:
             messages.append({"role": "user", "content": clean_user_query})
-            models_to_try = [active_model]
-            if active_model == "openai/gpt-oss-20b":
-                models_to_try.append("openai/gpt-oss-120b")
+            models_to_try = [MODEL_TEXT]
 
         # Dynamic Token Allocation: Estimate prompt tokens to avoid Groq TPM limits
         prompt_text_len = 0
@@ -502,9 +512,6 @@ SECURITY & INTEGRITY META-GUARDRAILS:
             if model_name == "openai/gpt-oss-120b":
                 # 120b has a strict 8000 TPM limit on Groq Free Tier (Prompt + Max_Tokens <= 8000)
                 return max(1000, min(4096, 7900 - prompt_tokens_est))
-            elif model_name == "openai/gpt-oss-20b":
-                # 20b has a massive 30,000 TPM limit. Expand max_tokens to 8000 to prevent long answers from being truncated
-                return 8000
             return 4096
 
         if stream:

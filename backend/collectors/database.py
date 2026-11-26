@@ -277,6 +277,7 @@ class PostgresClient:
                     FROM ai_user_memories
                     WHERE clerk_id = %s
                     ORDER BY updated_at DESC
+                    LIMIT 50
                 """, (clerk_id,))
                 rows = cur.fetchall()
                 return [dict(r) for r in rows]

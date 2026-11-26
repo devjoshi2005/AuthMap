@@ -5,29 +5,29 @@ logger = logging.getLogger(__name__)
 
 # Supported production models for manual user selection
 CURATED_PRODUCTION_MODELS = {
-    "balanced": "openai/gpt-oss-20b",
+    "balanced": "openai/gpt-oss-120b",
     "complex": "openai/gpt-oss-120b",
-    "openai/gpt-oss-20b": "openai/gpt-oss-20b",
+    "openai/gpt-oss-120b": "openai/gpt-oss-120b",
     "openai/gpt-oss-120b": "openai/gpt-oss-120b",
 }
 
-DEFAULT_PRODUCTION_MODEL = "openai/gpt-oss-20b"
+DEFAULT_PRODUCTION_MODEL = "openai/gpt-oss-120b"
 
 MODEL_MIGRATION_MAP = {
-    "llama-3.1-70b-versatile": "openai/gpt-oss-20b",
-    "llama-3.1-70b": "openai/gpt-oss-20b",
-    "llama3-70b": "openai/gpt-oss-20b",
-    "llama-70b": "openai/gpt-oss-20b",
-    "llama-3.3-70b-versatile": "openai/gpt-oss-20b",
-    "fast": "openai/gpt-oss-20b",
-    "llama-3-8b": "openai/gpt-oss-20b",
-    "llama3-8b": "openai/gpt-oss-20b",
-    "llama-8b": "openai/gpt-oss-20b",
+    "llama-3.1-70b-versatile": "openai/gpt-oss-120b",
+    "llama-3.1-70b": "openai/gpt-oss-120b",
+    "llama3-70b": "openai/gpt-oss-120b",
+    "llama-70b": "openai/gpt-oss-120b",
+    "llama-3.3-70b-versatile": "openai/gpt-oss-120b",
+    "fast": "openai/gpt-oss-120b",
+    "llama-3-8b": "openai/gpt-oss-120b",
+    "llama3-8b": "openai/gpt-oss-120b",
+    "llama-8b": "openai/gpt-oss-120b",
 }
 
 def normalize_model_name(model_name: Optional[str], default_model: str = DEFAULT_PRODUCTION_MODEL) -> str:
     """Resolves model from user's manual selection across curated tiers:
-    - Balanced (Default): openai/gpt-oss-20b
+    - Balanced (Default): openai/gpt-oss-120b
     - Complex: openai/gpt-oss-120b
     
     No automated prompt complexity keyword switching or vector overrides.

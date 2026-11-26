@@ -43,6 +43,7 @@ logger = logging.getLogger(__name__)
 MAX_TECH_PATHS = 12
 MAX_TECH_GROUPS = 12
 MAX_LLM_GROUPS = 8
+REMEDIATION_MODEL = "openai/gpt-oss-120b"
 MAX_INVENTORY_ROWS = 60
 
 
@@ -577,7 +578,7 @@ async def _generate_group_remediation(
             try:
                 client = AsyncGroq(api_key=key, max_retries=1, timeout=20.0)
                 response = await client.chat.completions.create(
-                    model="openai/gpt-oss-20b",
+                    model=REMEDIATION_MODEL,
                     messages=[{"role": "user", "content": prompt}],
                     response_format={"type": "json_object"},
                     temperature=0.2,
