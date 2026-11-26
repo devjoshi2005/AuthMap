@@ -370,7 +370,7 @@ thead { display: table-header-group; }
 {% endif %}
 
 <h3>How to read this table</h3>
-<p><strong>PASS</strong> means the framework was in scope and no violation was recorded. <strong>PARTIAL</strong> means violations affect workload or AWS-managed resources only, which are not human-remediable. <strong>FAIL</strong> means at least one human identity is affected and requires an owner decision. Rows are generated from this scan's recorded violations — there is no fixed control checklist, so DPDP, RBI, PCI-DSS, GDPR, HIPAA, ISO 27001, SEBI, IRDAI, IT Act and unmapped frameworks all render from the same pipeline.</p>
+<p><strong>PASS</strong> means the framework was in scope and no violation was recorded. <strong>PARTIAL</strong> means violations affect workload or AWS-managed resources only, which are not human-remediable. <strong>FAIL</strong> means at least one human identity is affected and requires an owner decision. Rows are generated from this scan's recorded violations, only for the frameworks selected at scan time; there is no fixed control checklist.</p>
 <div class="note">
 Verified telemetry: {{ human_count }} human identities, {{ total_paths }} recorded attack path(s), {{ violation_count }} compliance violation(s) across {{ group_count }} root-cause rule group(s).
 AWS service-linked roles and AWS-managed policies are excluded from human MFA and least-privilege counts. Resources whose classification was unavailable are counted conservatively as human.

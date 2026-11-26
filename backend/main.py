@@ -3,6 +3,7 @@ import sys
 import io
 import csv
 import json
+import asyncio
 import logging,traceback
 import hashlib
 import re
@@ -485,6 +486,19 @@ async def run_scan_pipeline(scan_id: str, clerk_id: str, req: ScanRequest):
                 )
             except Exception as db_exc:
                 logger.warning("Could not persist failure for scan %s: %s", scan_id, db_exc)
+        else:
+            # Orchestrator construction failed (e.g. transient DB error): make
+            # sure the row cannot stay "running" forever.
+            try:
+                await asyncio.to_thread(
+                    lambda: _get_status_db()
+                    .table("iam_scans")
+                    .update({"status": "failed", "error_message": str(exc)})
+                    .eq("id", scan_id)
+                    .execute()
+                )
+            except Exception as db_exc:
+                logger.warning("Could not persist failure fallback for scan %s: %s", scan_id, db_exc)
 
 
 def background_neo4j_warmup(neo4j_uri, neo4j_user, neo4j_password):
