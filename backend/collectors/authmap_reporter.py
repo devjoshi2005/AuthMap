@@ -136,6 +136,8 @@ async def _fetch_bundle(scan_id: str, orchestrator=None) -> Dict[str, Any]:
         "orchestrator": orchestrator,
         "scan": scan,
         "frameworks_in_scope": selected,
+        "scan_status": str(scan.get("status") or "unknown").lower(),
+        "scan_error": scan.get("error_message"),
         "paths": paths,
         "violations": violations,
         "entities": entities,
@@ -151,6 +153,8 @@ async def _fetch_bundle(scan_id: str, orchestrator=None) -> Dict[str, Any]:
 
 def build_executive_summary(bundle: Dict[str, Any]) -> Dict[str, Any]:
     scan = bundle["scan"]
+    scan_status = str(bundle.get("scan_status") or "unknown").lower()
+    is_complete = scan_status == "completed"
     paths = [normalize_path(p) for p in bundle["paths"]]
     violations = bundle["violations"]
     index = bundle["index"]
@@ -232,6 +236,17 @@ def build_executive_summary(bundle: Dict[str, Any]) -> Dict[str, Any]:
                 "decision": "Approve remediation sprint",
             }
         )
+    if not is_complete:
+        actions.insert(
+            0,
+            {
+                "priority": "P0",
+                "action": f"Scan did not complete ({scan_status}) — re-run before relying on these findings",
+                "owner": "Security Engineering",
+                "window": "Now",
+                "decision": "Re-run scan",
+            },
+        )
     if not actions:
         actions.append(
             {
@@ -245,6 +260,14 @@ def build_executive_summary(bundle: Dict[str, Any]) -> Dict[str, Any]:
 
     return {
         "scan_id": scan["id"],
+        "scan_status": scan_status,
+        "is_complete": is_complete,
+        "incomplete_note": (
+            None
+            if is_complete
+            else f"This scan did not complete (status: {scan_status}). "
+                 "Findings are partial or absent and must not be read as a clean result."
+        ),
         "scan_name": scan.get("scan_name") or "AuthMap scan",
         "csp_target": str(scan.get("csp_target") or "cloud").upper(),
         "audit_date": _iso_date(scan.get("completed_at") or scan.get("created_at")),
@@ -309,12 +332,17 @@ tr.partial td { background: #fffbeb; }
 .risk .t { font-weight: bold; font-size: 10pt; margin-bottom: 1mm; }
 .note { background: #f8fafc; border: 1px solid #e2e8f0; padding: 3mm; font-size: 7.8pt; color: #475569; margin-top: 4mm; }
 .pb { page-break-before: always; }
+.banner { background: #fef2f2; border: 1px solid #fecaca; border-left: 4px solid #b91c1c; padding: 3mm 4mm; color: #7f1d1d; font-size: 8.6pt; margin: 4mm 0 6mm 0; page-break-inside: avoid; }
+.banner strong { letter-spacing: 0.04em; }
 thead { display: table-header-group; }
 </style></head><body>
 
 <div class="meta">CLASSIFICATION: CONFIDENTIAL · SCAN {{ scan_id }} · {{ audit_date }}</div>
 <h1>Executive Security Briefing</h1>
 <p class="sub">{{ scan_name }} · {{ csp_target }} scope · prepared for executive and ministerial review</p>
+{% if not is_complete %}
+<div class="banner"><strong>SCAN INCOMPLETE.</strong> {{ incomplete_note }}</div>
+{% endif %}
 <div class="rule-top"></div>
 
 <table class="kpi"><tr>
@@ -615,8 +643,19 @@ async def build_technical_summary(scan_id: str, orchestrator=None, api_key: Opti
         bundle["human"].values(), key=lambda h: (-h["risk_score"], h["name"])
     )[:MAX_INVENTORY_ROWS]
 
+    scan_status = str(bundle.get("scan_status") or "unknown").lower()
+    is_complete = scan_status == "completed"
+
     return {
         "scan_id": scan["id"],
+        "scan_status": scan_status,
+        "is_complete": is_complete,
+        "incomplete_note": (
+            None
+            if is_complete
+            else f"This scan did not complete (status: {scan_status}). "
+                 "Findings are partial or absent and must not be read as a clean result."
+        ),
         "scan_name": scan.get("scan_name") or "AuthMap scan",
         "csp_target": str(scan.get("csp_target") or "cloud").upper(),
         "aws_account_id": _account_id(scan, bundle["entities"]),
@@ -683,11 +722,15 @@ pre { font-family: "DejaVu Sans Mono", "Courier New", monospace; background: #f8
 .sev-low { color: #475569; }
 .note { background: #f8fafc; border: 1px solid #e2e8f0; padding: 2.5mm; font-size: 7.4pt; color: #475569; margin: 3mm 0; }
 .pb { page-break-before: always; }
+.banner { background: #fef2f2; border: 1px solid #fecaca; border-left: 4px solid #b91c1c; padding: 2.5mm 3.5mm; color: #7f1d1d; font-size: 8pt; margin: 3mm 0 4mm 0; page-break-inside: avoid; }
 </style></head><body>
 
 <div class="meta">CONFIDENTIAL · SCAN {{ scan_id }} · {{ audit_date }}</div>
 <h1>Engineering Remediation Runbook</h1>
 <p class="sub">{{ scan_name }} · {{ csp_target }} · account {{ aws_account_id }}</p>
+{% if not is_complete %}
+<div class="banner"><strong>SCAN INCOMPLETE.</strong> {{ incomplete_note }}</div>
+{% endif %}
 
 <table class="telem">
 <tr><th>Identities</th><td>{{ total_identities }} human · {{ workload_count }} workload</td><th>Attack paths</th><td>{{ total_paths }} (critical {{ breakdown.critical }}, high {{ breakdown.high }}, medium {{ breakdown.medium }}, low {{ breakdown.low }}{% if breakdown.other %}, other {{ breakdown.other }}{% endif %})</td></tr>

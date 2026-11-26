@@ -183,6 +183,7 @@ def _bundle():
         "index": index,
         "human": human,
         "workload_count": 1,
+        "scan_status": "completed",
         "frameworks_in_scope": ["SOC2", "DPDP"],
     }
 
@@ -265,6 +266,7 @@ def _template_data():
     }
     return {
         "scan_id": "scan-1", "scan_name": "AWS Scan - Operator", "csp_target": "AWS",
+        "scan_status": "completed", "is_complete": True, "incomplete_note": None,
         "audit_date": "26 Nov 2026", "aws_account_id": "123456789012",
         "total_identities": 2, "human_count": 2, "workload_count": 1,
         "total_paths": 1, "critical_paths": 1, "actionable_paths": 1,
@@ -448,3 +450,27 @@ def test_selected_framework_with_no_findings_is_pass():
     matrix = compute_control_matrix([], {}, ["SOC2", "DPDP"])
     statuses = {r["framework"]: r["status"] for r in matrix["rows"]}
     assert statuses == {"SOC2": "PASS", "DPDP": "PASS"}
+
+
+# ---------------------------------------------------------------------------
+# Incomplete scans must never look like a clean result
+# ---------------------------------------------------------------------------
+
+def test_failed_scan_is_flagged_incomplete():
+    from collectors.authmap_reporter import build_executive_summary
+
+    bundle = _bundle()
+    bundle["scan_status"] = "failed"
+    summary = build_executive_summary(bundle)
+    assert summary["is_complete"] is False
+    assert "did not complete" in summary["incomplete_note"]
+    assert "did not complete" in summary["actions"][0]["action"]
+    assert summary["actions"][0]["decision"] == "Re-run scan"
+
+
+def test_completed_scan_has_no_banner():
+    from collectors.authmap_reporter import build_executive_summary
+
+    summary = build_executive_summary(_bundle())
+    assert summary["is_complete"] is True
+    assert summary["incomplete_note"] is None
