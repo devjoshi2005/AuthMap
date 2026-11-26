@@ -62,7 +62,7 @@ def _iso_date(value: Any) -> str:
         return text[:10]
 
 
-def _account_id(scan: Dict[str, Any], entities: List[Dict[str, Any]]) -> str:
+def _account_id(scan: Dict[str, Any], entities: Optional[List[Dict[str, Any]]] = None) -> str:
     config = scan.get("config") or {}
     if isinstance(config, dict):
         if config.get("aws_account_id"):
@@ -73,7 +73,7 @@ def _account_id(scan: Dict[str, Any], entities: List[Dict[str, Any]]) -> str:
             return match.group(1)
         if config.get("gcp_project_id"):
             return str(config["gcp_project_id"])
-    for entity in entities:
+    for entity in entities or []:
         if entity.get("aws_account_id"):
             return str(entity["aws_account_id"])
         if entity.get("gcp_project_id"):
@@ -81,7 +81,8 @@ def _account_id(scan: Dict[str, Any], entities: List[Dict[str, Any]]) -> str:
     return "Not recorded"
 
 
-async def _fetch_bundle(scan_id: str, orchestrator=None) -> Dict[str, Any]:
+def load_scan_bundle(scan_id: str, orchestrator: Any = None) -> Dict[str, Any]:
+    """Load everything the reports need in one pass (blocking; call via to_thread)."""
     if orchestrator is None:
         from main import get_orchestrator
 
@@ -461,8 +462,8 @@ class AuthMapExecutiveReporter:
         return output_path
 
 
-async def generate_executive_brief(scan_id: str, orchestrator=None) -> str:
-    bundle = await _fetch_bundle(scan_id, orchestrator)
+async def generate_executive_brief(scan_id: str, orchestrator: Any = None) -> str:
+    bundle = await asyncio.to_thread(load_scan_bundle, scan_id, orchestrator)
     data = build_executive_summary(bundle)
     out = tempfile.NamedTemporaryFile(delete=False, suffix=".pdf")
     out.close()
@@ -600,8 +601,9 @@ async def _generate_group_remediation(
         return fallback
 
 
-async def build_technical_summary(scan_id: str, orchestrator=None, api_key: Optional[str] = None) -> Dict[str, Any]:
-    bundle = await _fetch_bundle(scan_id, orchestrator)
+async def build_technical_summary(
+    bundle: Dict[str, Any], api_key: Optional[str] = None
+) -> Dict[str, Any]:
     scan = bundle["scan"]
     index = bundle["index"]
     paths = [normalize_path(p) for p in bundle["paths"]]
@@ -659,7 +661,7 @@ async def build_technical_summary(scan_id: str, orchestrator=None, api_key: Opti
         ),
         "scan_name": scan.get("scan_name") or "AuthMap scan",
         "csp_target": str(scan.get("csp_target") or "cloud").upper(),
-        "aws_account_id": _account_id(scan, bundle["entities"]),
+        "aws_account_id": _account_id(scan, bundle.get("entities")),
         "audit_date": _iso_date(scan.get("completed_at") or scan.get("created_at")),
         "total_identities": len(bundle["human"]),
         "human_count": len(bundle["human"]),
@@ -830,8 +832,9 @@ class AuthMapTechnicalReporter:
         return output_path
 
 
-async def generate_technical_runbook(scan_id: str, orchestrator=None) -> str:
-    data = await build_technical_summary(scan_id, orchestrator)
+async def generate_technical_runbook(scan_id: str, orchestrator: Any = None) -> str:
+    bundle = await asyncio.to_thread(load_scan_bundle, scan_id, orchestrator)
+    data = await build_technical_summary(bundle)
     out = tempfile.NamedTemporaryFile(delete=False, suffix=".pdf")
     out.close()
     return AuthMapTechnicalReporter().generate_pdf(data, out.name)

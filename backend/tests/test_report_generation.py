@@ -5,18 +5,14 @@ avoid the database, Groq and WeasyPrint so they can run in CI without external
 services.
 """
 
-import os
-import sys
-
 import pytest
-
-sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from collectors.report_utils import (  # noqa: E402
     build_violation_groups,
     compute_cc6_controls,
     compute_control_matrix,
     humanize_text,
+    infer_framework,
     is_human_identity,
     is_service_linked_identity,
     normalize_framework,
@@ -474,3 +470,9 @@ def test_completed_scan_has_no_banner():
     summary = build_executive_summary(_bundle())
     assert summary["is_complete"] is True
     assert summary["incomplete_note"] is None
+
+
+def test_legacy_cc6_rows_without_framework_infer_soc2():
+    assert infer_framework(None, "SOC2 CC6.1") == "SOC2"
+    assert infer_framework("", "CC6.6") == "SOC2"
+    assert infer_framework(None, "RBI Cyber Security 2.1") == "UNSPECIFIED"

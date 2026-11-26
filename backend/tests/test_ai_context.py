@@ -1,10 +1,5 @@
 """Tests for model policy and context budgeting (no Groq/DB required)."""
 
-import os
-import sys
-
-sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-
 from collectors.ai_context import (  # noqa: E402
     MAX_CONTEXT_CHARS,
     MODEL_TEXT,

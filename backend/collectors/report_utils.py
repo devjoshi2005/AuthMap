@@ -307,14 +307,6 @@ def build_violation_groups(
     return groups
 
 
-def _control_of(rule: str) -> Optional[str]:
-    upper = str(rule or "").upper().replace(" ", "")
-    for control in CC6_CONTROLS:
-        if control in upper:
-            return control
-    return None
-
-
 def normalize_framework(value: Any) -> str:
     """Canonical display name for any stored framework value."""
     raw = str(value or "").strip().upper()
@@ -324,6 +316,14 @@ def normalize_framework(value: Any) -> str:
     if compact in _FRAMEWORK_DISPLAY:
         return _FRAMEWORK_DISPLAY[compact]
     return raw.replace("_", " ")
+
+
+def infer_framework(value: Any, rule: Any = "") -> str:
+    """Normalise a framework; infer SOC 2 for legacy CC6 rows with no mapping."""
+    framework = normalize_framework(value)
+    if framework == "UNSPECIFIED" and "CC6" in str(rule or "").upper():
+        return "SOC2"
+    return framework
 
 
 def clean_control_label(rule: Any, framework: str) -> str:
@@ -368,7 +368,9 @@ def compute_control_matrix(
     for violation in violations:
         if violation_is_noise(violation, entities_by_arn):
             continue
-        framework = normalize_framework(violation.get("compliance_framework"))
+        framework = infer_framework(
+            violation.get("compliance_framework"), violation.get("violation_type")
+        )
         if scoped_set and framework not in scoped_set and framework != "UNSPECIFIED":
             continue
         control = clean_control_label(violation.get("violation_type"), framework)
@@ -446,47 +448,27 @@ def compute_cc6_controls(
     violations: Iterable[Dict[str, Any]],
     entities_by_arn: Optional[Dict[str, Dict[str, Any]]] = None,
 ) -> List[Dict[str, Any]]:
-    """Per-control posture derived from real violations.
+    """SOC 2 CC6 projection of the framework-agnostic control matrix.
 
-    PASS -> no violation for the control
-    PARTIAL -> violations affect workload/service-linked resources only
-    FAIL -> at least one violation affects a human identity
-
-    Unknown resources are counted as human (conservative) so missing telemetry
-    never makes a control look better than it is.
+    Retained for backwards compatibility; new code should call
+    :func:`compute_control_matrix`, which supports every framework.
     """
-    entities_by_arn = entities_by_arn or {}
-    tally = {c: {"human": set(), "workload": set()} for c in CC6_CONTROLS}
+    matrix = compute_control_matrix(violations, entities_by_arn)
+    rows = {
+        str(row["control"]).upper(): row
+        for row in matrix["rows"]
+        if row["framework"] == "SOC2"
+    }
 
-    for violation in violations:
-        if violation_is_noise(violation, entities_by_arn):
-            continue
-        control = _control_of(violation.get("violation_type", ""))
-        if not control:
-            continue
-        arn = str(violation.get("resource_id") or "Unknown")
-        entity = entities_by_arn.get(arn)
-        if entity and not is_human_identity(entity):
-            tally[control]["workload"].add(arn)
-        else:
-            tally[control]["human"].add(arn)
-
-    controls = []
+    controls: List[Dict[str, Any]] = []
     for control in CC6_CONTROLS:
-        human = tally[control]["human"]
-        workload = tally[control]["workload"]
-        if not human and not workload:
-            status = "PASS"
-        elif human:
-            status = "FAIL"
-        else:
-            status = "PARTIAL"
+        row = rows.get(control)
         controls.append(
             {
                 "id": control,
-                "status": status,
-                "human_count": len(human),
-                "workload_count": len(workload),
+                "status": row["status"] if row else "PASS",
+                "human_count": row["human_count"] if row else 0,
+                "workload_count": row["workload_count"] if row else 0,
                 "impact": CC6_IMPACT[control],
                 "owner": CC6_OWNER[control],
             }
