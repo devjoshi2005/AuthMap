@@ -351,3 +351,25 @@ def test_severity_breakdown_keeps_unknown_severities():
     ])
     assert counts["critical"] == 1
     assert counts["other"] == 1
+
+
+def test_mfa_noise_filtered_for_historical_service_linked_rows():
+    entities = {
+        "arn:aws:iam::1:role/AWSServiceRoleForECS": {"entity_arn": "arn:aws:iam::1:role/AWSServiceRoleForECS", "entity_type": "role"},
+        "arn:aws:iam::1:user/alice": {"entity_arn": "arn:aws:iam::1:user/alice", "entity_type": "user"},
+    }
+    violations = [
+        {"violation_type": "SOC2 CC6.3", "compliance_framework": "SOC2",
+         "resource_id": "arn:aws:iam::1:role/AWSServiceRoleForECS", "severity": "critical"},
+        {"violation_type": "SOC2 CC6.3", "compliance_framework": "SOC2",
+         "resource_id": "arn:aws:iam::1:user/alice", "severity": "critical"},
+        {"violation_type": "SOC2 CC6.1", "compliance_framework": "SOC2",
+         "resource_id": "arn:aws:iam::1:role/AWSServiceRoleForECS", "severity": "medium"},
+    ]
+    groups = build_violation_groups(violations, entities)
+    cc63 = [g for g in groups if "CC6.3" in g["violation_type"]][0]
+    assert cc63["count"] == 1
+    assert cc63["resources"][0]["arn"] == "arn:aws:iam::1:user/alice"
+    # Non-MFA findings for service-linked resources are still reported (workload risk).
+    cc61 = [g for g in groups if "CC6.1" in g["violation_type"]][0]
+    assert cc61["count"] == 1

@@ -107,6 +107,31 @@ def is_human_identity(entity: Dict[str, Any]) -> bool:
     return identity_type(entity) in _HUMAN_TYPES
 
 
+_MFA_RULE_HINTS = ("mfa", "multi-factor", "multifactor", "2fa", "cc6.3")
+
+
+def is_mfa_rule(rule: Any) -> bool:
+    text = str(rule or "").lower()
+    return any(hint in text for hint in _MFA_RULE_HINTS)
+
+
+def violation_is_noise(
+    violation: Dict[str, Any], entities_by_arn: Optional[Dict[str, Dict[str, Any]]] = None
+) -> bool:
+    """Drop MFA findings raised against non-human/service-linked principals.
+
+    The scanner fix prevents new ones; this keeps historical scans honest too.
+    Non-MFA findings are never dropped here.
+    """
+    if not is_mfa_rule(violation.get("violation_type")):
+        return False
+    arn = str(violation.get("resource_id") or "")
+    entity = (entities_by_arn or {}).get(arn)
+    if entity is not None:
+        return not is_human_identity(entity)
+    return is_service_linked_identity({"entity_arn": arn})
+
+
 def severity_rank(severity: Optional[str]) -> int:
     return SEVERITY_ORDER.get(str(severity or "").strip().lower(), 99)
 
@@ -201,6 +226,8 @@ def build_violation_groups(
     grouped: Dict[tuple, Dict[str, Any]] = {}
 
     for violation in violations:
+        if violation_is_noise(violation, entities_by_arn):
+            continue
         fw = str(violation.get("compliance_framework") or "SOC2")
         rule = str(violation.get("violation_type") or "Unclassified rule")
         key = (rule.strip().lower(), fw.strip().upper())
@@ -298,6 +325,8 @@ def compute_control_matrix(
 
     groups: Dict[tuple, Dict[str, Any]] = {}
     for violation in violations:
+        if violation_is_noise(violation, entities_by_arn):
+            continue
         framework = normalize_framework(violation.get("compliance_framework"))
         control = clean_control_label(violation.get("violation_type"), framework)
         key = (framework, control.strip().lower())
@@ -387,6 +416,8 @@ def compute_cc6_controls(
     tally = {c: {"human": set(), "workload": set()} for c in CC6_CONTROLS}
 
     for violation in violations:
+        if violation_is_noise(violation, entities_by_arn):
+            continue
         control = _control_of(violation.get("violation_type", ""))
         if not control:
             continue
