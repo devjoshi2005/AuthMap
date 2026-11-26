@@ -17,6 +17,7 @@ from collectors.ai_security_guardrails import (
     validate_cypher_query,
     armor_context_block,
     sanitize_and_verify_rag_chunk,
+    security_processing_enabled,
 )
 from collectors.image_guardrail import extract_text_from_base64
 from collectors.transit_encryption import TransitObfuscator
@@ -248,24 +249,26 @@ class AuthMapAIAssistant:
         clean_user_query = normalize_and_clean_input(query)
 
         # ── GUARDRAIL STAGE 2: ML-POWERED MULTILINGUAL SAFETY & DOMAIN CLASSIFIER ────
-        ml_guard = get_ml_guardrail()
-        evaluation = ml_guard.classify_request(clean_user_query)
-        if not evaluation.get("is_safe", True):
-            refusal_msg = evaluation.get("safe_response_in_language") or (
-                "I cannot fulfill this request. AuthMap AI operates under strict security boundaries "
-                "and does not permit prompt injections, jailbreaks, system prompt extraction, or offensive operations."
-            )
-            if stream:
-                async def _refusal_gen():
-                    import json
-                    yield json.dumps({"type": "chunk", "text": refusal_msg}) + "\n\n"
-                    yield json.dumps({"type": "done"}) + "\n\n"
-                return _refusal_gen()
-            return {
-                "response": refusal_msg,
-                "model": "guardrail-enforced",
-                "metrics": {}
-            }
+        # Skipped entirely when AUTHMAP_SECURITY_ENABLED=false (kill switch).
+        if security_processing_enabled():
+            ml_guard = get_ml_guardrail()
+            evaluation = ml_guard.classify_request(clean_user_query)
+            if not evaluation.get("is_safe", True):
+                refusal_msg = evaluation.get("safe_response_in_language") or (
+                    "I cannot fulfill this request. AuthMap AI operates under strict security boundaries "
+                    "and does not permit prompt injections, jailbreaks, system prompt extraction, or offensive operations."
+                )
+                if stream:
+                    async def _refusal_gen():
+                        import json
+                        yield json.dumps({"type": "chunk", "text": refusal_msg}) + "\n\n"
+                        yield json.dumps({"type": "done"}) + "\n\n"
+                    return _refusal_gen()
+                return {
+                    "response": refusal_msg,
+                    "model": "guardrail-enforced",
+                    "metrics": {}
+                }
 
         # 1. Exact Deterministic Ground-Truth Telemetry & User-Chosen Compliance Extraction
         telemetry_result = build_ground_truth_telemetry(

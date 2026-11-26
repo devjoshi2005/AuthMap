@@ -50,10 +50,22 @@ SUPPORTED_PRESIDIO_LANGUAGES = [
 ]
 
 
+
+# ── GLOBAL KILL SWITCH ─────────────────────────────────────────────────────
+# AUTHMAP_SECURITY_ENABLED=false disables all request-time security processing
+# (normalization, ML guardrail calls, Presidio redaction, Cypher/web/RAG
+# sanitization). Defaults to enabled. Only disable for trusted/benchmark traffic.
+def security_processing_enabled() -> bool:
+    return os.getenv("AUTHMAP_SECURITY_ENABLED", "true").strip().lower() not in {
+        "0", "false", "no", "off", "disabled"
+    }
+
 def normalize_and_clean_input(text: str) -> str:
     """Normalizes Unicode using NFKC while preserving genuine multilingual scripts
     (Latin, Cyrillic, Devanagari, Hanzi, Kanji, Arabic, etc.), and strips invisible
     formatting/zero-width characters and BiDi overrides using standard Python unicodedata properties."""
+    if not security_processing_enabled():
+        return text or ""
     if not text or not isinstance(text, str):
         return ""
     normalized = unicodedata.normalize("NFKC", text)
@@ -233,6 +245,8 @@ def get_presidio_redactor() -> PresidioCloudRedactor:
 
 def redact_sensitive_credentials(text: str) -> str:
     """Global redaction entrypoint using Microsoft Presidio."""
+    if not security_processing_enabled():
+        return text
     return get_presidio_redactor().redact(text)
 
 
@@ -492,6 +506,8 @@ def validate_cypher_query(query: str) -> Tuple[bool, str]:
     """Strictly ensures a generated or user Cypher query is 100% read-only and safe."""
     if not query or not isinstance(query, str):
         return False, "Empty query"
+    if not security_processing_enabled():
+        return True, query.strip()
         
     clean_q = query.strip()
     upper_q = clean_q.upper()
@@ -516,6 +532,8 @@ def validate_web_url_safety(url_str: str) -> bool:
     """Enterprise SSRF protection using Python standard ipaddress and DNS resolver."""
     if not url_str or not isinstance(url_str, str):
         return False
+    if not security_processing_enabled():
+        return True
         
     try:
         parsed = urlparse(url_str.strip())
@@ -558,6 +576,8 @@ def sanitize_web_snippet(snippet: str) -> str:
     """Strips HTML tags using high-performance Rust ammonia (nh3) sanitizer and Presidio PII scrubber."""
     if not snippet:
         return ""
+    if not security_processing_enabled():
+        return snippet
     clean = nh3.clean(snippet, tags=set())
     clean = html.unescape(clean)
     clean = normalize_and_clean_input(clean)
@@ -571,7 +591,9 @@ def evaluate_indirect_prompt_injection(text: str) -> Tuple[bool, str]:
     instruction overrides using the Meta Llama Guard 3 ML taxonomy and Meta Prompt Guard APIs."""
     if not text or len(text.strip()) == 0:
         return False, ""
-    
+    if not security_processing_enabled():
+        return False, ""
+
     guard = get_ml_guardrail()
     classification = guard.classify_request(text)
     
@@ -588,6 +610,8 @@ def sanitize_and_verify_rag_chunk(chunk_data: Dict[str, Any]) -> Optional[Dict[s
     properties normalization, and Presidio credential redaction with zero token overhead."""
     if not isinstance(chunk_data, dict):
         return None
+    if not security_processing_enabled():
+        return chunk_data
 
     raw_title = str(chunk_data.get("title") or chunk_data.get("chunk", {}).get("title") or "")
     raw_content = str(chunk_data.get("content") or chunk_data.get("chunk", {}).get("content") or "")
@@ -619,6 +643,8 @@ def sanitize_and_verify_rag_chunk(chunk_data: Dict[str, Any]) -> Optional[Dict[s
 def armor_context_block(tag_name: str, content: str, attributes: Optional[Dict[str, str]] = None) -> str:
     """Wraps retrieved telemetry, graph data, or client RAG in armored XML tags
     with strict isolation instructions using standard library escaping."""
+    if not security_processing_enabled():
+        return content
     attr_str = ""
     if attributes:
         attr_str = " " + " ".join([f'{k}="{html.escape(str(v))}"' for k, v in attributes.items()])
