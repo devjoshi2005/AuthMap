@@ -692,7 +692,24 @@ async def start_scan(
     except Exception as mem_e:
         logger.warning(f"Could not auto-sync scan wizard inputs to memory: {mem_e}")
 
-    background_tasks.add_task(run_scan_pipeline, scan_id, clerk_id, req)
+    if os.getenv("AWS_LAMBDA_FUNCTION_NAME"):
+        import boto3
+
+        job = {
+            "authmap_job": "scan",
+            "scan_id": scan_id,
+            "clerk_id": clerk_id,
+            "request": req.model_dump(mode="json"),
+        }
+        await asyncio.to_thread(
+            lambda: boto3.client("lambda").invoke(
+                FunctionName=os.environ["AWS_LAMBDA_FUNCTION_NAME"],
+                InvocationType="Event",
+                Payload=json.dumps(job).encode("utf-8"),
+            )
+        )
+    else:
+        background_tasks.add_task(run_scan_pipeline, scan_id, clerk_id, req)
     return {"scan_id": scan_id, "status": "started"}
 
 

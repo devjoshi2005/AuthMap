@@ -1,0 +1,26 @@
+FROM public.ecr.aws/lambda/python:3.11
+
+RUN yum install -y \
+        cairo \
+        dejavu-sans-fonts \
+        gdk-pixbuf2 \
+        libffi \
+        pango \
+        shared-mime-info \
+        gcc \
+        gcc-c++ \
+        make && \
+    yum clean all
+
+COPY requirements.txt .
+RUN pip install --no-cache-dir --upgrade pip && \
+    pip install --no-cache-dir "numpy==1.26.4" "scikit-learn>=1.5.0,<1.6" "scipy>=1.10.0,<1.13" "spacy==3.8.0" "thinc==8.2.2" "pillow>=10.4.0,<11" && \
+    pip install --no-cache-dir -r requirements.txt
+
+COPY . .
+
+ENV FONT_DEJAVU_REGULAR=/usr/share/fonts/dejavu/DejaVuSans.ttf
+ENV FONT_DEJAVU_BOLD=/usr/share/fonts/dejavu/DejaVuSans-Bold.ttf
+ENV AUTHMAP_SECURITY_ENABLED=true
+
+CMD ["lambda_handler.handler"]

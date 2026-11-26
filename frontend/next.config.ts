@@ -29,7 +29,7 @@ const nextConfig: NextConfig = {
 	async headers() {
 		const clerkHosts = "https://*.clerk.accounts.dev https://clerk.com";
 		const backendOrigins =
-			"https://au-611fda3e66c34377b1540e37489404d2.ecs.ap-south-1.on.aws";
+			"https://4rcjz2s6oab3d2htvrdyhpduwq0iurdz.lambda-url.ap-south-1.on.aws https://au-611fda3e66c34377b1540e37489404d2.ecs.ap-south-1.on.aws";
 
 		const cspDirectives = [
 			`default-src 'self' ${clerkHosts}`,
