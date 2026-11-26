@@ -27,10 +27,10 @@ const REPORT_TYPES = [
   },
   {
     key: "executive" as const,
-    label: "Executive Briefing",
-    title: "Ministerial Dossier",
+    label: "Compliance Briefing",
+    title: "Executive Report",
     description:
-      "3–5 page decision brief: posture verdict, KPI cards, top systemic risks, compliance matrix and 30/60/90-day governance actions with owners. No ARN walls, no code.",
+      "3–5 page decision brief: posture verdict, KPI cards, top systemic risks, compliance matrix and 30/60/90-day governance actions with owners.",
     accentClass: "action-box-cyan",
     filename: "executive_brief",
     icon: <FileText className="h-6 w-6 text-white" />,

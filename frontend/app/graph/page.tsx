@@ -22,6 +22,8 @@ interface GraphNode {
   type: string;
   provider?: string;
   risk_score?: number;
+  path_risk_score?: number;
+  path_count?: number;
   is_admin?: boolean;
   is_overprivileged?: boolean;
   has_mfa?: boolean;
@@ -120,30 +122,41 @@ const cyStylesheet: cytoscape.StylesheetStyle[] = [
   {
     selector: ".attack-path",
     style: {
-      "line-color": "#ff4444",
-      "target-arrow-color": "#ff4444",
-      width: 3,
+      "line-color": "#ff4d6d",
+      "target-arrow-color": "#ff4d6d",
+      width: 3.5,
+      "arrow-scale": 1,
       "z-index": 10,
     },
   },
   {
     selector: ".attack-path-node",
     style: {
-      "border-color": "#ff4444",
+      "border-color": "#ff4d6d",
       "border-width": 4,
       "border-opacity": 1,
+      "color": "#ffffff",
+      "font-size": 13,
+      "font-weight": "bold",
+      "text-outline-color": "#ff1744",
+      "text-outline-width": 4,
+      "text-opacity": 1,
+      "opacity": 1,
+      "z-index": 20,
     },
   },
   {
     selector: "node.dimmed",
     style: {
-      "opacity": 0.2,
+      "opacity": 0.1,
+      "text-opacity": 0.1,
+      "border-opacity": 0.1,
     },
   },
   {
     selector: "edge.dimmed",
     style: {
-      "opacity": 0.1,
+      "opacity": 0.05,
     },
   },
 ];
@@ -268,7 +281,9 @@ export default function GraphPage() {
             id: n.id,
             label: finalLabel,
             type: n.type,
-            risk_score: n.risk_score ?? 20,
+            risk_score: n.risk_score ?? 0,
+            path_risk_score: n.path_risk_score ?? 0,
+            path_count: n.path_count ?? 0,
             is_admin: n.is_admin ?? false,
             is_overprivileged: n.is_overprivileged ?? false,
             has_mfa: n.has_mfa ?? false,
@@ -573,11 +588,22 @@ export default function GraphPage() {
                       </div>
                     )}
                     <div className="flex justify-between text-sm">
-                      <span className="text-slate-400">Risk Score</span>
+                      <span className="text-slate-400">Node Risk</span>
                       <span className={`font-semibold ${riskColor(selectedNode.risk_score)}`}>
                         {selectedNode.risk_score ?? "N/A"}
                       </span>
                     </div>
+                    {Boolean(selectedNode.path_risk_score) && (
+                      <div className="flex justify-between text-sm">
+                        <span className="text-slate-400">Attack-path Risk</span>
+                        <span className={`font-semibold ${riskColor(selectedNode.path_risk_score)}`}>
+                          {selectedNode.path_risk_score}
+                          {selectedNode.path_count && selectedNode.path_count > 1
+                            ? ` · ${selectedNode.path_count} paths`
+                            : ""}
+                        </span>
+                      </div>
+                    )}
                     {selectedNode.account_id && (
                       <div className="flex justify-between text-sm">
                         <span className="text-slate-400">Account</span>

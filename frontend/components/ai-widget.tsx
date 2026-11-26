@@ -32,8 +32,8 @@ const QUICK_PROMPTS = [
   "What is our estimated breach cost exposure?",
 ];
 
+// 20b returned blank completions; the consultant is pinned to 120b.
 const CURATED_MODELS = [
-  { id: "openai/gpt-oss-20b", label: "Balanced (20B)", desc: "Optimal balance of intelligence and speed" },
   { id: "openai/gpt-oss-120b", label: "Complex (120B)", desc: "Deep multi-step reasoning for IAM escalation" },
 ];
 
@@ -44,7 +44,7 @@ export function AIWidget() {
   const [messages, setMessages] = useState<Message[]>([]);
   const [input, setInput] = useState("");
   const [loading, setLoading] = useState(false);
-  const [selectedModel, setSelectedModel] = useState<string>("openai/gpt-oss-20b");
+  const [selectedModel, setSelectedModel] = useState<string>("openai/gpt-oss-120b");
   const [copiedIdx, setCopiedIdx] = useState<number | null>(null);
   const [attachedImage, setAttachedImage] = useState<string | null>(null);
   const [pasteError, setPasteError] = useState("");
@@ -119,7 +119,7 @@ export function AIWidget() {
             role: "assistant",
             content:
               "Hello! I am your **AuthMap AI Security Consultant**.\n\nAsk me anything about your live graph topology, overprivileged trust chains, blast radius minimization, or compliance remediation steps.",
-            modelUsed: "openai/gpt-oss-20b",
+            modelUsed: "openai/gpt-oss-120b",
             timestamp: new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }),
           },
         ]);
@@ -464,11 +464,7 @@ export function AIWidget() {
                     {!isUser && (
                       <div className="mt-3 flex items-center justify-between border-t border-white/5 pt-2 text-[0.62rem] text-[#999999]">
                         <span className="rounded bg-white/5 px-1.5 py-0.5 font-mono text-[#b4b4b4]">
-                          {m.modelUsed?.includes("120b")
-                            ? "120B Complex"
-                            : m.modelUsed?.includes("20b")
-                            ? "20B Fast"
-                            : "20B Fast"}
+                          {m.modelUsed?.includes("120b") ? "120B Complex" : "120B Complex"}
                         </span>
                         <button
                           onClick={() => handleCopy(m.content, idx)}

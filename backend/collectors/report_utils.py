@@ -349,7 +349,7 @@ def compute_control_matrix(
     violations: Iterable[Dict[str, Any]],
     entities_by_arn: Optional[Dict[str, Dict[str, Any]]] = None,
     frameworks_in_scope: Optional[Iterable[str]] = None,
-    max_rows: int = 12,
+    max_rows: Optional[int] = 12,
 ) -> Dict[str, Any]:
     """Build a framework-agnostic posture matrix from whatever is in the scan.
 
@@ -436,8 +436,9 @@ def compute_control_matrix(
         )
 
     rows.sort(key=lambda r: (severity_rank(r["severity"]), -r["count"], r["framework"], r["control"]))
+    visible_rows = rows if max_rows is None else rows[:max_rows]
     return {
-        "rows": rows[:max_rows],
+        "rows": visible_rows,
         "total": len(rows),
         "frameworks": sorted({row["framework"] for row in rows}),
         "frameworks_in_scope": scoped,

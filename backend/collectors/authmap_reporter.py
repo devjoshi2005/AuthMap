@@ -40,11 +40,11 @@ from collectors.report_utils import (
 
 logger = logging.getLogger(__name__)
 
-MAX_TECH_PATHS = 12
-MAX_TECH_GROUPS = 12
+MAX_TECH_PATHS: Optional[int] = None
+MAX_TECH_GROUPS: Optional[int] = None
 MAX_LLM_GROUPS = 8
 REMEDIATION_MODEL = "openai/gpt-oss-120b"
-MAX_INVENTORY_ROWS = 60
+MAX_INVENTORY_ROWS: Optional[int] = None
 
 
 # ---------------------------------------------------------------------------
@@ -226,6 +226,7 @@ def build_executive_summary(bundle: Dict[str, Any]) -> Dict[str, Any]:
         violations,
         index,
         frameworks_in_scope=bundle.get("frameworks_in_scope"),
+        max_rows=None,
     )
     if groups:
         top_group = groups[0]
@@ -288,7 +289,7 @@ def build_executive_summary(bundle: Dict[str, Any]) -> Dict[str, Any]:
         "controls_total": matrix["total"],
         "frameworks": matrix["frameworks"],
         "frameworks_in_scope": matrix["frameworks_in_scope"],
-        "top_paths": paths[:6],
+        "top_paths": paths,
         "actions": actions,
         "violation_count": sum(g["count"] for g in groups),
         "group_count": len(groups),
@@ -314,12 +315,16 @@ p { margin: 0 0 2.5mm 0; }
 .sub { color: #475569; font-size: 9pt; margin-bottom: 7mm; }
 .meta { color: #64748b; font-size: 7.8pt; }
 .rule-top { border-top: 3px solid #0f172a; margin: 4mm 0 5mm 0; }
-table.kpi { width: 100%; border-collapse: separate; border-spacing: 3mm 0; table-layout: fixed; margin: 0 0 6mm 0; }
-table.kpi td { width: 25%; border: 1px solid #e2e8f0; background: #ffffff; padding: 4mm 3mm; vertical-align: top; }
+table.kpi { width: 100%; border-collapse: collapse; table-layout: fixed; margin: 0 0 6mm 0; }
+table.kpi td { width: 25%; padding: 0; vertical-align: top; }
+table.kpi .card { border: 1px solid #e2e8f0; background: #ffffff; padding: 4mm 3mm; margin-right: 3mm; }
+table.kpi td:last-child .card { margin-right: 0; }
 table.kpi .v { font-size: 19pt; font-weight: bold; letter-spacing: -0.02em; }
 table.kpi .l { font-size: 7.2pt; text-transform: uppercase; letter-spacing: 0.07em; color: #64748b; margin-top: 1mm; }
 .crit { border-left: 3px solid #b91c1c !important; }
 .warn { border-left: 3px solid #b45309 !important; }
+table, th, td { box-sizing: border-box; }
+table { max-width: 100%; }
 table.grid { width: 100%; border-collapse: collapse; table-layout: fixed; }
 table.grid th { background: #f1f5f9; color: #334155; font-size: 7.8pt; text-align: left; padding: 2.4mm; border: 1px solid #e2e8f0; }
 table.grid td { font-size: 8.3pt; padding: 2.4mm; border: 1px solid #e2e8f0; vertical-align: top; overflow-wrap: anywhere; }
@@ -334,6 +339,8 @@ tr.partial td { background: #fffbeb; }
 .risk .t { font-weight: bold; font-size: 10pt; margin-bottom: 1mm; }
 .note { background: #f8fafc; border: 1px solid #e2e8f0; padding: 3mm; font-size: 7.8pt; color: #475569; margin-top: 4mm; }
 .pb { page-break-before: always; }
+table, th, td { box-sizing: border-box; }
+table { max-width: 100%; }
 .banner { background: #fef2f2; border: 1px solid #fecaca; border-left: 4px solid #b91c1c; padding: 3mm 4mm; color: #7f1d1d; font-size: 8.6pt; margin: 4mm 0 6mm 0; page-break-inside: avoid; }
 .banner strong { letter-spacing: 0.04em; }
 thead { display: table-header-group; }
@@ -348,10 +355,10 @@ thead { display: table-header-group; }
 <div class="rule-top"></div>
 
 <table class="kpi"><tr>
-  <td><div class="v">{{ total_identities }}</div><div class="l">Identities evaluated</div><div class="meta">{{ human_count }} human · {{ workload_count }} workload</div></td>
-  <td class="crit"><div class="v">{{ actionable_paths }}</div><div class="l">Paths requiring action</div><div class="meta">critical {{ breakdown.critical }} · high {{ breakdown.high }} · of {{ total_paths }} total</div></td>
-  <td><div class="v">{{ max_risk_score }}</div><div class="l">Max blast-radius score</div><div class="meta">0–100 hybrid risk</div></td>
-  <td class="warn"><div class="v">${{ breach_cost|money }}</div><div class="l">Quantified exposure</div><div class="meta">estimated annualised loss</div></td>
+  <td><div class="card"><div class="v">{{ total_identities }}</div><div class="l">Identities evaluated</div><div class="meta">{{ human_count }} human · {{ workload_count }} workload</div></div></td>
+  <td><div class="card crit"><div class="v">{{ actionable_paths }}</div><div class="l">Paths requiring action</div><div class="meta">critical {{ breakdown.critical }} · high {{ breakdown.high }} · of {{ total_paths }} total</div></div></td>
+  <td><div class="card"><div class="v">{{ max_risk_score }}</div><div class="l">Max blast-radius score</div><div class="meta">0–100 hybrid risk</div></div></td>
+  <td><div class="card warn"><div class="v">${{ breach_cost|money }}</div><div class="l">Quantified exposure</div><div class="meta">estimated annualised loss</div></div></td>
 </tr></table>
 
 <h2>Top systemic risks</h2>
@@ -369,7 +376,7 @@ thead { display: table-header-group; }
 
 <h2>Immediate governance actions</h2>
 <table class="grid">
-<thead><tr><th style="width:10%">Priority</th><th style="width:40%">Action</th><th style="width:19%">Owner</th><th style="width:13%">Window</th><th style="width:18%">Decision required</th></tr></thead>
+<thead><tr><th style="width:9%">Priority</th><th style="width:37%">Action</th><th style="width:18%">Owner</th><th style="width:12%">Window</th><th style="width:24%">Decision required</th></tr></thead>
 <tbody>
 {% for action in actions %}
 <tr><td>{{ action.priority }}</td><td>{{ action.action }}</td><td>{{ action.owner }}</td><td>{{ action.window }}</td><td>{{ action.decision }}</td></tr>
@@ -616,7 +623,7 @@ async def build_technical_summary(
         frameworks_in_scope=bundle.get("frameworks_in_scope"),
     )
     groups_total = len(all_groups)
-    groups = all_groups[:MAX_TECH_GROUPS]
+    groups = all_groups if MAX_TECH_GROUPS is None else all_groups[:MAX_TECH_GROUPS]
 
     api_key = api_key or os.getenv("GROQ_ALTERNATE_KEY") or os.getenv("GROQ_API_KEY")
     if api_key and groups:
@@ -644,7 +651,9 @@ async def build_technical_summary(
 
     human_identities = sorted(
         bundle["human"].values(), key=lambda h: (-h["risk_score"], h["name"])
-    )[:MAX_INVENTORY_ROWS]
+    )
+    if MAX_INVENTORY_ROWS is not None:
+        human_identities = human_identities[:MAX_INVENTORY_ROWS]
 
     scan_status = str(bundle.get("scan_status") or "unknown").lower()
     is_complete = scan_status == "completed"
@@ -674,7 +683,7 @@ async def build_technical_summary(
         "frameworks_in_scope": [
             normalize_framework(f) for f in bundle.get("frameworks_in_scope", [])
         ],
-        "attack_paths": paths[:MAX_TECH_PATHS],
+        "attack_paths": paths if MAX_TECH_PATHS is None else paths[:MAX_TECH_PATHS],
         "attack_paths_total": len(paths),
         "violation_groups": groups,
         "violation_groups_total": groups_total,
@@ -725,6 +734,8 @@ pre { font-family: "DejaVu Sans Mono", "Courier New", monospace; background: #f8
 .sev-low { color: #475569; }
 .note { background: #f8fafc; border: 1px solid #e2e8f0; padding: 2.5mm; font-size: 7.4pt; color: #475569; margin: 3mm 0; }
 .pb { page-break-before: always; }
+table, th, td { box-sizing: border-box; }
+table { max-width: 100%; }
 .banner { background: #fef2f2; border: 1px solid #fecaca; border-left: 4px solid #b91c1c; padding: 2.5mm 3.5mm; color: #7f1d1d; font-size: 8pt; margin: 3mm 0 4mm 0; page-break-inside: avoid; }
 </style></head><body>
 
@@ -744,7 +755,7 @@ pre { font-family: "DejaVu Sans Mono", "Courier New", monospace; background: #f8
 
 <h2>Attack-path traces</h2>
 {% if attack_paths %}
-<p class="meta">Showing {{ attack_paths|length }} of {{ attack_paths_total }} recorded paths, highest risk first.</p>
+<p class="meta">{% if attack_paths_total > attack_paths|length %}Showing {{ attack_paths|length }} of {{ attack_paths_total }}{% else %}{{ attack_paths_total }}{% endif %} recorded path(s), highest risk first.</p>
 {% for path in attack_paths %}
 <div class="trace">
   <div class="head">PATH {{ loop.index }} · SCORE {{ path.score|round|int }}/100 · <span class="sev-{{ path.severity }}">{{ path.severity|upper }}</span></div>
@@ -759,7 +770,7 @@ pre { font-family: "DejaVu Sans Mono", "Courier New", monospace; background: #f8
 
 <h2>Policy-as-code violations and remediation</h2>
 {% if violation_groups %}
-<p class="meta">One entry per root-cause rule ({{ violation_groups_total }} groups in total, {{ violation_groups|length }} shown). AWS service-linked roles and AWS-managed policies are excluded.</p>
+<p class="meta">One entry per root-cause rule ({% if violation_groups_total > violation_groups|length %}{{ violation_groups|length }} of {{ violation_groups_total }} groups shown{% else %}{{ violation_groups_total }} group(s){% endif %}). AWS service-linked roles and AWS-managed policies are excluded.</p>
 {% for group in violation_groups %}
 <div class="group">
   <div class="ghead">{{ group.violation_type }} <span class="sev-{{ group.severity }}">· {{ group.severity|upper }}</span></div>

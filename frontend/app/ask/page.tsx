@@ -90,22 +90,15 @@ const PROMPT_SUGGESTIONS = [
   },
 ];
 
+// 20b returned blank completions; the consultant is pinned to 120b.
 const CURATED_MODELS = [
-  {
-    id: "openai/gpt-oss-20b",
-    name: "Balanced",
-    version: "20B Fast",
-    label: "Balanced (20B)",
-    desc: "Optimal balance of intelligence and speed for IAM analysis, attack paths & SOC 2 compliance.",
-    badge: "Default",
-  },
   {
     id: "openai/gpt-oss-120b",
     name: "Complex",
     version: "120B Deep Audit",
     label: "Complex (120B)",
     desc: "Deep multi-step reasoning for intricate IAM escalation graphs and regulatory legal audits.",
-    badge: "Deep Audit",
+    badge: "Default",
   },
 ];
 
@@ -178,7 +171,7 @@ export default function AskPage() {
   const [activeId, setActiveId] = useState<string>("default");
   const [input, setInput] = useState("");
   const [loading, setLoading] = useState(false);
-  const [selectedModel, setSelectedModel] = useState<string>("openai/gpt-oss-20b");
+  const [selectedModel, setSelectedModel] = useState<string>("openai/gpt-oss-120b");
   const [copiedIndex, setCopiedIndex] = useState<number | null>(null);
   const [searchFilter, setSearchFilter] = useState("");
   const [sidebarOpen, setSidebarOpen] = useState(true);
@@ -1237,11 +1230,7 @@ export default function AskPage() {
                           <div className="flex items-center gap-2">
                             {m.modelUsed && (
                               <span className="rounded-md border border-white/10 bg-[#2f2f2f] px-2 py-0.5 font-mono text-[0.68rem] text-[#b4b4b4]">
-                                {m.modelUsed.includes("120b")
-                                  ? "120B Deep Audit"
-                                  : m.modelUsed.includes("20b")
-                                  ? "20B Fast"
-                                  : "20B Fast"}
+                                {m.modelUsed.includes("120b") ? "120B Deep Audit" : "120B Deep Audit"}
                               </span>
                             )}
                             {memories.length > 0 && (
