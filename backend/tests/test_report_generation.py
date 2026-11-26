@@ -476,3 +476,12 @@ def test_legacy_cc6_rows_without_framework_infer_soc2():
     assert infer_framework(None, "SOC2 CC6.1") == "SOC2"
     assert infer_framework("", "CC6.6") == "SOC2"
     assert infer_framework(None, "RBI Cyber Security 2.1") == "UNSPECIFIED"
+
+
+def test_compact_currency_fits_kpi():
+    from collectors.authmap_reporter import _money_compact
+
+    assert _money_compact(100_701_400) == "100.7M"
+    assert _money_compact(3_925_350) == "3.9M"
+    assert _money_compact(950) == "950"
+    assert _money_compact(2_500_000_000) == "2.5B"

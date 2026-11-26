@@ -182,7 +182,7 @@ def build_executive_summary(bundle: Dict[str, Any]) -> Dict[str, Any]:
                 ),
                 "severity": path["severity"].upper(),
                 "score": int(round(path["score"])),
-                "impact": f"${path['cost']:,.0f} estimated exposure",
+                "impact": f"${_money_compact(path['cost'])} estimated exposure",
             }
         )
 
@@ -319,7 +319,7 @@ table.kpi { width: 100%; border-collapse: collapse; table-layout: fixed; margin:
 table.kpi td { width: 25%; padding: 0; vertical-align: top; }
 table.kpi .card { border: 1px solid #e2e8f0; background: #ffffff; padding: 4mm 3mm; margin-right: 3mm; }
 table.kpi td:last-child .card { margin-right: 0; }
-table.kpi .v { font-size: 19pt; font-weight: bold; letter-spacing: -0.02em; }
+table.kpi .v { font-size: 18pt; font-weight: bold; letter-spacing: -0.03em; white-space: nowrap; }
 table.kpi .l { font-size: 7.2pt; text-transform: uppercase; letter-spacing: 0.07em; color: #64748b; margin-top: 1mm; }
 .crit { border-left: 3px solid #b91c1c !important; }
 .warn { border-left: 3px solid #b45309 !important; }
@@ -358,7 +358,7 @@ thead { display: table-header-group; }
   <td><div class="card"><div class="v">{{ total_identities }}</div><div class="l">Identities evaluated</div><div class="meta">{{ human_count }} human · {{ workload_count }} workload</div></div></td>
   <td><div class="card crit"><div class="v">{{ actionable_paths }}</div><div class="l">Paths requiring action</div><div class="meta">critical {{ breakdown.critical }} · high {{ breakdown.high }} · of {{ total_paths }} total</div></div></td>
   <td><div class="card"><div class="v">{{ max_risk_score }}</div><div class="l">Max blast-radius score</div><div class="meta">0–100 hybrid risk</div></div></td>
-  <td><div class="card warn"><div class="v">${{ breach_cost|money }}</div><div class="l">Quantified exposure</div><div class="meta">estimated annualised loss</div></div></td>
+  <td><div class="card warn"><div class="v">${{ breach_cost|money_compact }}</div><div class="l">Quantified exposure</div><div class="meta">estimated annualised loss</div></div></td>
 </tr></table>
 
 <h2>Top systemic risks</h2>
@@ -451,6 +451,15 @@ Prepared by AuthMap from stored scan telemetry for scan {{ scan_id }} on {{ audi
 </body></html>"""
 
 
+def _money_compact(value: Any) -> str:
+    """Executive-friendly currency (e.g. $100.7M) that fits KPI cards."""
+    amount = float(value or 0)
+    for divisor, suffix in ((1_000_000_000, "B"), (1_000_000, "M"), (1_000, "K")):
+        if abs(amount) >= divisor:
+            return f"{amount / divisor:.1f}{suffix}"
+    return f"{amount:.0f}"
+
+
 class AuthMapExecutiveReporter:
     """Renders the 3-5 page executive briefing dossier."""
 
@@ -463,6 +472,7 @@ class AuthMapExecutiveReporter:
         env.filters["short"] = short_name
         env.filters["wrap"] = wrap_long_id
         env.filters["humanize"] = humanize_text
+        env.filters["money_compact"] = _money_compact
         template = env.from_string(EXECUTIVE_TEMPLATE)
         html = template.render(**data)
         HTML(string=html).write_pdf(output_path)
