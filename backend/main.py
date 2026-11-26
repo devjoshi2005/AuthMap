@@ -658,6 +658,30 @@ async def start_scan(
     return {"scan_id": scan_id, "status": "started"}
 
 
+# Overall progress at the *start* of each phase. `phase_progress` in the DB is a
+# per-phase percentage (discovery hits 100 before graph_building starts), so it
+# must never be shown directly as overall progress.
+PHASE_START_PROGRESS = {
+    "initializing": 0,
+    "discovery": 5,
+    "graph_building": 30,
+    "risk_scoring": 50,
+    "compliance": 65,
+    "remediation": 80,
+    "reporting": 90,
+    "done": 100,
+    "error": 0,
+}
+
+
+def overall_progress(status: str, phase: str) -> int:
+    if status == "completed":
+        return 100
+    if status == "failed":
+        return 0
+    return PHASE_START_PROGRESS.get(phase or "", 0)
+
+
 @app.get("/scan/status/{scan_id}")
 async def get_scan_status(
     scan_id: str,
@@ -665,7 +689,9 @@ async def get_scan_status(
 ):
     """Return current scan progress (in-memory first, then Supabase fallback)."""
     if scan_id in scan_status:
-        return scan_status[scan_id]
+        entry = dict(scan_status[scan_id])
+        entry["progress"] = overall_progress(entry.get("status", "running"), entry.get("phase", ""))
+        return entry
 
     try:
         orchestrator = get_orchestrator()
@@ -673,11 +699,12 @@ async def get_scan_status(
         result = orchestrator.supabase.table("iam_scans").select("*").eq("id", scan_id).execute()
         if result.data:
             scan = result.data[0]
+            status = scan.get("status", "unknown")
             return {
                 "scan_id": scan_id,
-                "status": scan.get("status", "unknown"),
+                "status": status,
                 "phase": scan.get("current_phase", ""),
-                "progress": scan.get("phase_progress", 0),
+                "progress": overall_progress(status, scan.get("current_phase", "")),
                 "error": scan.get("error_message"),
             }
     except Exception as exc:
