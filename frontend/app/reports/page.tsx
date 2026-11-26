@@ -27,10 +27,10 @@ const REPORT_TYPES = [
   },
   {
     key: "executive" as const,
-    label: "Compliance Briefing",
-    title: "Executive Report",
+    label: "Executive Summary",
+    title: "Compliance & Executive Overview",
     description:
-      "3–5 page decision brief: posture verdict, KPI cards, top systemic risks, compliance matrix and 30/60/90-day governance actions with owners.",
+      "A concise PDF with your executive risk summary, blast-radius exposure, top attack paths and 30/60/90-day actions, mapped to the compliance frameworks you selected.",
     accentClass: "action-box-cyan",
     filename: "executive_brief",
     icon: <FileText className="h-6 w-6 text-white" />,
