@@ -25,6 +25,7 @@ from typing import Any, Dict, List, Optional
 from collectors.report_utils import (
     build_violation_groups,
     compute_cc6_controls,
+    normalize_framework,
     compute_control_matrix,
     humanize_text,
     is_human_identity,
@@ -210,7 +211,11 @@ def build_executive_summary(bundle: Dict[str, Any]) -> Dict[str, Any]:
                 "decision": "Confirm owners",
             }
         )
-    groups = build_violation_groups(violations, index)
+    groups = build_violation_groups(
+        violations,
+        index,
+        frameworks_in_scope=bundle.get("frameworks_in_scope"),
+    )
     matrix = compute_control_matrix(
         violations,
         index,
@@ -260,7 +265,7 @@ def build_executive_summary(bundle: Dict[str, Any]) -> Dict[str, Any]:
         "frameworks_in_scope": matrix["frameworks_in_scope"],
         "top_paths": paths[:6],
         "actions": actions,
-        "violation_count": len(violations),
+        "violation_count": sum(g["count"] for g in groups),
         "group_count": len(groups),
     }
 
@@ -574,7 +579,11 @@ async def build_technical_summary(scan_id: str, orchestrator=None, api_key: Opti
     paths.sort(key=lambda p: p["score"], reverse=True)
     breakdown = severity_breakdown(bundle["paths"])
 
-    all_groups = build_violation_groups(bundle["violations"], index)
+    all_groups = build_violation_groups(
+        bundle["violations"],
+        index,
+        frameworks_in_scope=bundle.get("frameworks_in_scope"),
+    )
     groups_total = len(all_groups)
     groups = all_groups[:MAX_TECH_GROUPS]
 
@@ -619,7 +628,10 @@ async def build_technical_summary(scan_id: str, orchestrator=None, api_key: Opti
         "breakdown": breakdown,
         "max_risk_score": round(max((p["score"] for p in paths), default=0.0)),
         "breach_cost": sum(p["cost"] for p in paths),
-        "total_violations": len(bundle["violations"]),
+        "total_violations": sum(g["count"] for g in all_groups),
+        "frameworks_in_scope": [
+            normalize_framework(f) for f in bundle.get("frameworks_in_scope", [])
+        ],
         "attack_paths": paths[:MAX_TECH_PATHS],
         "attack_paths_total": len(paths),
         "violation_groups": groups,
@@ -680,6 +692,7 @@ pre { font-family: "DejaVu Sans Mono", "Courier New", monospace; background: #f8
 <table class="telem">
 <tr><th>Identities</th><td>{{ total_identities }} human · {{ workload_count }} workload</td><th>Attack paths</th><td>{{ total_paths }} (critical {{ breakdown.critical }}, high {{ breakdown.high }}, medium {{ breakdown.medium }}, low {{ breakdown.low }}{% if breakdown.other %}, other {{ breakdown.other }}{% endif %})</td></tr>
 <tr><th>Violations</th><td>{{ total_violations }} across {{ violation_groups_total }} root-cause groups</td><th>Max risk</th><td>{{ max_risk_score }}/100 · exposure ${{ breach_cost|money }}</td></tr>
+<tr><th>Compliance scope</th><td colspan="3">{{ frameworks_in_scope|join(', ') if frameworks_in_scope else 'not recorded for this scan' }} — only findings for these frameworks are included.</td></tr>
 <tr><th>Graph telemetry</th><td colspan="3">Stored scan entities and traversal results for this scan; unverified counts are stated explicitly rather than inferred.</td></tr>
 </table>
 

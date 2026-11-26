@@ -416,3 +416,35 @@ def test_fallback_is_rule_aware():
     assert "DenyPrivilegeEscalationActions" in over["iam_policy_diff"]
     generic = _fallback_remediation("Unmapped framework rule", "")
     assert "No automated policy" in generic["iam_policy_diff"]
+
+
+# ---------------------------------------------------------------------------
+# Reports must honour the compliance frameworks chosen in the wizard
+# ---------------------------------------------------------------------------
+
+def test_groups_respect_wizard_scope():
+    violations = [
+        {"violation_type": "SOC2 CC6.1", "compliance_framework": "SOC2", "resource_id": "arn:a", "severity": "high"},
+        {"violation_type": "DPDP Sec 8(4)", "compliance_framework": "DPDP", "resource_id": "arn:b", "severity": "high"},
+    ]
+    assert len(build_violation_groups(violations, frameworks_in_scope=["SOC2"])) == 1
+    assert len(build_violation_groups(violations, frameworks_in_scope=["SOC2", "DPDP"])) == 2
+    assert len(build_violation_groups(violations)) == 2
+
+
+def test_matrix_respects_wizard_scope():
+    violations = [
+        {"violation_type": "SOC2 CC6.1", "compliance_framework": "SOC2", "resource_id": "arn:a", "severity": "high"},
+        {"violation_type": "DPDP Sec 8(4)", "compliance_framework": "DPDP", "resource_id": "arn:b", "severity": "high"},
+    ]
+    soc2_only = compute_control_matrix(violations, {}, ["SOC2"])
+    assert {r["framework"] for r in soc2_only["rows"]} == {"SOC2"}
+
+    both = compute_control_matrix(violations, {}, ["SOC2", "DPDP"])
+    assert {r["framework"] for r in both["rows"]} == {"SOC2", "DPDP"}
+
+
+def test_selected_framework_with_no_findings_is_pass():
+    matrix = compute_control_matrix([], {}, ["SOC2", "DPDP"])
+    statuses = {r["framework"]: r["status"] for r in matrix["rows"]}
+    assert statuses == {"SOC2": "PASS", "DPDP": "PASS"}

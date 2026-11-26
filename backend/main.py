@@ -347,6 +347,21 @@ def get_aws_cloudformation(external_id: str, account_id: str = ""):
 
 scan_status: dict[str, dict] = {}
 
+# Lightweight, single connection pool used only for /scan/status lookups.
+# Building a full ScanOrchestrator per poll is expensive and blocks the loop.
+_scan_status_db = None
+
+
+def _get_status_db():
+    global _scan_status_db
+    if _scan_status_db is None:
+        from collectors.database import PostgresClient
+        uri = os.getenv("POSTGRES_URI")
+        if not uri:
+            raise RuntimeError("POSTGRES_URI is not configured")
+        _scan_status_db = PostgresClient(uri)
+    return _scan_status_db
+
 
 def hash_clerk_id(clerk_id: str) -> str:
     if not clerk_id:
@@ -373,11 +388,11 @@ async def run_scan_pipeline(scan_id: str, clerk_id: str, req: ScanRequest):
     """
     orchestrator = None
 
-    def persist_progress(phase: str, progress: int) -> None:
+    async def persist_progress(phase: str, progress: int) -> None:
         if orchestrator is None:
             return
         try:
-            orchestrator._update_phase(scan_id, phase, progress)
+            await asyncio.to_thread(orchestrator._update_phase, scan_id, phase, progress)
         except Exception as db_exc:
             logger.warning("Could not persist progress for scan %s: %s", scan_id, db_exc)
 
@@ -390,16 +405,20 @@ async def run_scan_pipeline(scan_id: str, clerk_id: str, req: ScanRequest):
             "error": None,
         }
 
-        orchestrator = get_orchestrator(
-            neo4j_uri=req.neo4j_uri,
-            neo4j_user=req.neo4j_username,
-            neo4j_password=req.neo4j_password,
+        # Constructing the orchestrator opens Postgres + Neo4j connections.
+        orchestrator = await asyncio.to_thread(
+            lambda: get_orchestrator(
+                neo4j_uri=req.neo4j_uri,
+                neo4j_user=req.neo4j_username,
+                neo4j_password=req.neo4j_password,
+            )
         )
 
-        # Phase 1 — Discovery
+        # Phase 1 — Discovery (blocking cloud APIs; run off the event loop)
         scan_status[scan_id].update(phase="discovery", progress=10)
-        persist_progress("discovery", 10)
-        orchestrator.run_scan(
+        await persist_progress("discovery", 10)
+        await asyncio.to_thread(
+            orchestrator.run_scan,
             scan_id=scan_id,
             clerk_id=clerk_id,
             aws_role_arn=req.aws_role_arn,
@@ -412,14 +431,14 @@ async def run_scan_pipeline(scan_id: str, clerk_id: str, req: ScanRequest):
 
         # Phase 2 — Graph analysis
         scan_status[scan_id].update(phase="graph_building", progress=40)
-        persist_progress("graph_building", 40)
-        paths = orchestrator.run_graph_analysis(scan_id)
-        
+        await persist_progress("graph_building", 40)
+        paths = await asyncio.to_thread(orchestrator.run_graph_analysis, scan_id)
 
         # Phase 3 — Attack paths & cost
         scan_status[scan_id].update(phase="risk_scoring", progress=60)
-        persist_progress("risk_scoring", 60)
-        orchestrator.create_attack_paths(
+        await persist_progress("risk_scoring", 60)
+        await asyncio.to_thread(
+            orchestrator.create_attack_paths,
             scan_id,
             clerk_id,
             paths,
@@ -430,18 +449,21 @@ async def run_scan_pipeline(scan_id: str, clerk_id: str, req: ScanRequest):
 
         # Phase 4 — Compliance
         scan_status[scan_id].update(phase="compliance", progress=75)
-        persist_progress("compliance", 75)
-        await orchestrator.create_compliance_violations(scan_id, clerk_id, req.selected_compliances)
+        await persist_progress("compliance", 75)
+        await asyncio.to_thread(
+            asyncio.run,
+            orchestrator.create_compliance_violations(scan_id, clerk_id, req.selected_compliances),
+        )
 
         # Phase 5 — AI Remediation
         scan_status[scan_id].update(phase="remediation", progress=85)
-        persist_progress("remediation", 85)
-        await orchestrator.create_remediations(scan_id)
+        await persist_progress("remediation", 85)
+        await asyncio.to_thread(asyncio.run, orchestrator.create_remediations(scan_id))
 
         # Phase 6 — Finalize
         scan_status[scan_id].update(phase="reporting", progress=95)
-        persist_progress("reporting", 95)
-        orchestrator.finalize_scan(scan_id)
+        await persist_progress("reporting", 95)
+        await asyncio.to_thread(orchestrator.finalize_scan, scan_id)
 
         scan_status[scan_id].update(status="completed", phase="done", progress=100)
 
@@ -457,8 +479,10 @@ async def run_scan_pipeline(scan_id: str, clerk_id: str, req: ScanRequest):
         }
         if orchestrator is not None:
             try:
-                orchestrator._update_phase(scan_id, "error", progress)
-                orchestrator._update_scan_status(scan_id, "failed", str(exc))
+                await asyncio.to_thread(orchestrator._update_phase, scan_id, "error", progress)
+                await asyncio.to_thread(
+                    orchestrator._update_scan_status, scan_id, "failed", str(exc)
+                )
             except Exception as db_exc:
                 logger.warning("Could not persist failure for scan %s: %s", scan_id, db_exc)
 
@@ -694,9 +718,14 @@ async def get_scan_status(
         return entry
 
     try:
-        orchestrator = get_orchestrator()
-        verify_scan_ownership(scan_id, clerk_id, orchestrator)
-        result = orchestrator.supabase.table("iam_scans").select("*").eq("id", scan_id).execute()
+        result = (
+            _get_status_db()
+            .table("iam_scans")
+            .select("id,status,current_phase,phase_progress,error_message")
+            .eq("id", scan_id)
+            .eq("clerk_id", clerk_id)
+            .execute()
+        )
         if result.data:
             scan = result.data[0]
             status = scan.get("status", "unknown")
@@ -708,7 +737,7 @@ async def get_scan_status(
                 "error": scan.get("error_message"),
             }
     except Exception as exc:
-        logger.warning("Supabase lookup failed for scan %s: %s", scan_id, exc)
+        logger.warning("Status lookup failed for scan %s: %s", scan_id, exc)
 
     raise HTTPException(status_code=404, detail="Scan not found")
 

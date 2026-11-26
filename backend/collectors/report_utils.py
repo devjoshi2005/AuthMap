@@ -245,6 +245,7 @@ def build_violation_groups(
     violations: Iterable[Dict[str, Any]],
     entities_by_arn: Optional[Dict[str, Dict[str, Any]]] = None,
     max_resources: int = 250,
+    frameworks_in_scope: Optional[Iterable[str]] = None,
 ) -> List[Dict[str, Any]]:
     """Group identical rule/framework violations into one entry per root cause.
 
@@ -253,11 +254,20 @@ def build_violation_groups(
     """
     entities_by_arn = entities_by_arn or {}
     grouped: Dict[tuple, Dict[str, Any]] = {}
+    scoped = {
+        normalize_framework(f)
+        for f in (frameworks_in_scope or [])
+        if str(f or "").strip()
+    }
 
     for violation in violations:
         if violation_is_noise(violation, entities_by_arn):
             continue
         fw = normalize_framework(violation.get("compliance_framework"))
+        # Respect the frameworks the user selected in the wizard. Unmapped
+        # findings are retained and labelled explicitly rather than hidden.
+        if scoped and fw not in scoped and fw != "UNSPECIFIED":
+            continue
         raw_rule = str(violation.get("violation_type") or "Unclassified rule")
         rule = clean_control_label(raw_rule, fw)
         key = (rule.strip().lower(), fw)
@@ -354,10 +364,13 @@ def compute_control_matrix(
     scoped = list(dict.fromkeys(scoped))
 
     groups: Dict[tuple, Dict[str, Any]] = {}
+    scoped_set = set(scoped)
     for violation in violations:
         if violation_is_noise(violation, entities_by_arn):
             continue
         framework = normalize_framework(violation.get("compliance_framework"))
+        if scoped_set and framework not in scoped_set and framework != "UNSPECIFIED":
+            continue
         control = clean_control_label(violation.get("violation_type"), framework)
         key = (framework, control.strip().lower())
         entry = groups.setdefault(
