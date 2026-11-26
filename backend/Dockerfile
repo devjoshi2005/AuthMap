@@ -41,6 +41,8 @@ COPY . .
 
 ENV FONT_DEJAVU_REGULAR=/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf
 ENV FONT_DEJAVU_BOLD=/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf
+# Security guardrails ON by default; deployment-level override lives in deploy.sh.
+ENV AUTHMAP_SECURITY_ENABLED=true
 
 EXPOSE 8000
 
