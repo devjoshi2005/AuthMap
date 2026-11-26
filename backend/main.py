@@ -365,7 +365,22 @@ def get_orchestrator(neo4j_uri=None, neo4j_user=None, neo4j_password=None, requi
 
 
 async def run_scan_pipeline(scan_id: str, clerk_id: str, req: ScanRequest):
-    """Execute the full scan pipeline in the background."""
+    """Execute the full scan pipeline in the background.
+
+    Progress is mirrored to Postgres on every phase so that any task behind the
+    load balancer (not just the process owning the in-memory dict) can answer
+    /scan/status correctly.
+    """
+    orchestrator = None
+
+    def persist_progress(phase: str, progress: int) -> None:
+        if orchestrator is None:
+            return
+        try:
+            orchestrator._update_phase(scan_id, phase, progress)
+        except Exception as db_exc:
+            logger.warning("Could not persist progress for scan %s: %s", scan_id, db_exc)
+
     try:
         scan_status[scan_id] = {
             "scan_id": scan_id,
@@ -383,6 +398,7 @@ async def run_scan_pipeline(scan_id: str, clerk_id: str, req: ScanRequest):
 
         # Phase 1 — Discovery
         scan_status[scan_id].update(phase="discovery", progress=10)
+        persist_progress("discovery", 10)
         orchestrator.run_scan(
             scan_id=scan_id,
             clerk_id=clerk_id,
@@ -396,11 +412,13 @@ async def run_scan_pipeline(scan_id: str, clerk_id: str, req: ScanRequest):
 
         # Phase 2 — Graph analysis
         scan_status[scan_id].update(phase="graph_building", progress=40)
+        persist_progress("graph_building", 40)
         paths = orchestrator.run_graph_analysis(scan_id)
         
 
         # Phase 3 — Attack paths & cost
         scan_status[scan_id].update(phase="risk_scoring", progress=60)
+        persist_progress("risk_scoring", 60)
         orchestrator.create_attack_paths(
             scan_id,
             clerk_id,
@@ -412,27 +430,37 @@ async def run_scan_pipeline(scan_id: str, clerk_id: str, req: ScanRequest):
 
         # Phase 4 — Compliance
         scan_status[scan_id].update(phase="compliance", progress=75)
+        persist_progress("compliance", 75)
         await orchestrator.create_compliance_violations(scan_id, clerk_id, req.selected_compliances)
 
         # Phase 5 — AI Remediation
         scan_status[scan_id].update(phase="remediation", progress=85)
+        persist_progress("remediation", 85)
         await orchestrator.create_remediations(scan_id)
 
         # Phase 6 — Finalize
         scan_status[scan_id].update(phase="reporting", progress=95)
+        persist_progress("reporting", 95)
         orchestrator.finalize_scan(scan_id)
 
         scan_status[scan_id].update(status="completed", phase="done", progress=100)
 
     except Exception as exc:
         logger.exception("Scan pipeline failed for %s", scan_id)
+        progress = scan_status.get(scan_id, {}).get("progress", 0)
         scan_status[scan_id] = {
             "scan_id": scan_id,
             "status": "failed",
             "phase": "error",
-            "progress": scan_status.get(scan_id, {}).get("progress", 0),
+            "progress": progress,
             "error": str(exc),
         }
+        if orchestrator is not None:
+            try:
+                orchestrator._update_phase(scan_id, "error", progress)
+                orchestrator._update_scan_status(scan_id, "failed", str(exc))
+            except Exception as db_exc:
+                logger.warning("Could not persist failure for scan %s: %s", scan_id, db_exc)
 
 
 def background_neo4j_warmup(neo4j_uri, neo4j_user, neo4j_password):
