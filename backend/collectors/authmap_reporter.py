@@ -1,563 +1,791 @@
-import os
-import sys
+"""AuthMap report generation.
+
+Produces two deliberately different deliverables:
+
+* ``authmap_executive_brief_<scan>.pdf`` — 3-5 page decision dossier for
+  ministers / CISOs / boards. KPI cards, posture matrix, plain-English risks.
+  No raw ARNs, no code.
+* ``authmap_technical_runbook_<scan>.pdf`` — deduplicated engineering runbook.
+  Attack-path traces, one entry per root-cause rule with an affected-resource
+  table, and copy-pasteable IAM / Terraform / CLI remediation.
+
+All counts come from the stored scan; nothing is fabricated. When a data source
+is empty the report says so explicitly instead of printing a synthetic value.
+"""
+
 import asyncio
-from typing import List, Optional
-from datetime import datetime
-from pydantic import BaseModel, Field
+import json
+import os
+import re
+import tempfile
+from datetime import datetime, timezone
+from typing import Any, Dict, List, Optional
 
-class IAMIdentity(BaseModel):
-    identity_type: str = Field(..., description="User, Role, or ServiceAccount")
-    arn: str = Field(..., description="The unique identifier (ARN or Email)")
-    trust_policy: str = Field(..., description="The assume role policy document or authentication mechanism")
+from collectors.report_utils import (
+    build_violation_groups,
+    compute_cc6_controls,
+    compute_control_matrix,
+    is_human_identity,
+    is_service_linked_identity,
+    normalize_identity,
+    normalize_path,
+    path_nodes,
+    severity_breakdown,
+    short_name,
+    wrap_long_id,
+)
 
-class PolicyEvaluationResult(BaseModel):
-    rule_name: str = Field(..., description="Rego rule name")
-    status: str = Field(..., description="COMPLIANT or VIOLATION")
-    evaluated_context: str = Field(..., description="Description of the failure and exact remediation")
+MAX_TECH_PATHS = 12
+MAX_TECH_GROUPS = 12
+MAX_LLM_GROUPS = 8
+MAX_INVENTORY_ROWS = 60
 
-class PrivilegeEscalationPath(BaseModel):
-    source_identity: str = Field(..., description="The entrypoint identity")
-    hop: str = Field(..., description="The intermediary resource or role assumed")
-    target_admin_role: str = Field(..., description="The destination highly privileged role")
-    exploit_vector: str = Field(..., description="The toxic combination allowing lateral movement")
-    cli_command: Optional[str] = Field(None, description="CLI remediation step")
-    terraform_snippet: Optional[str] = Field(None, description="Terraform remediation block")
-    risk_score: int = Field(..., description="The hybrid risk score of the path")
 
-class CC6AuditSummary(BaseModel):
-    scope_analyzed: str = Field(..., description="Scope of the IAM environments audited")
-    total_identities: int
-    blast_radius_summary: str
-    audit_period: str
-    cc6_1_status: str
-    cc6_2_status: str
-    cc6_3_status: str
-    cc6_6_status: str
-    identities: List[IAMIdentity]
-    policy_evaluations: List[PolicyEvaluationResult]
-    privilege_escalation_paths: List[PrivilegeEscalationPath]
+# ---------------------------------------------------------------------------
+# Data collection
+# ---------------------------------------------------------------------------
 
-class AuthMapSOC2Reporter:
-    """Orchestrates the generation of professional SOC 2 CC6 Readiness PDF Reports."""
-    
-    def __init__(self):
-        # We define a strict, professional SOC2 template without emojis or unnecessary colors
-        self.html_template = """
-        <!DOCTYPE html>
-        <html lang="en">
-        <head>
-            <meta charset="UTF-8">
-            <title>SOC 2 CC6 Readiness Assessment Report</title>
-            <style>
-                @page {
-                    size: A4;
-                    margin: 20mm;
-                    @top-center {
-                        content: "CONFIDENTIAL - INTERNAL AUDIT USE ONLY";
-                        font-size: 8pt;
-                        color: #666666;
-                        font-family: "Helvetica", sans-serif;
-                    }
-                    @bottom-right {
-                        content: "Page " counter(page) " of " counter(pages);
-                        font-size: 8pt;
-                        color: #666666;
-                        font-family: "Helvetica", sans-serif;
-                    }
-                }
-                body {
-                    font-family: "Helvetica", "Arial", sans-serif;
-                    color: #333333;
-                    line-height: 1.4;
-                    font-size: 10pt;
-                    margin: 0;
-                    padding: 0;
-                }
-                .header-container {
-                    display: flex;
-                    align-items: center;
-                    border-bottom: 2px solid #000000;
-                    padding-bottom: 10px;
-                    margin-top: 0px;
-                    margin-bottom: 20px;
-                }
-                .logo {
-                    width: 32px;
-                    height: 32px;
-                    background-color: #1a1a1a;
-                    color: white;
-                    display: inline-flex;
-                    align-items: center;
-                    justify-content: center;
-                    font-weight: bold;
-                    font-size: 16px;
-                    margin-right: 15px;
-                }
-                .title-container h1 {
-                    margin: 0;
-                    font-size: 18pt;
-                    color: #000000;
-                }
-                .title-container h2 {
-                    margin: 5px 0 0 0;
-                    font-size: 12pt;
-                    font-weight: normal;
-                    color: #555555;
-                }
-                h3 {
-                    border-bottom: 1px solid #cccccc;
-                    padding-bottom: 5px;
-                    margin-top: 30px;
-                    font-size: 14pt;
-                    color: #000000;
-                    page-break-after: avoid;
-                }
-                table {
-                    width: 100%;
-                    border-collapse: collapse;
-                    margin-top: 15px;
-                    table-layout: fixed;
-                }
-                th, td {
-                    border: 1px solid #dddddd;
-                    padding: 8px;
-                    vertical-align: top;
-                    word-wrap: break-word;
-                }
-                th {
-                    background-color: #f2f2f2;
-                    font-weight: bold;
-                    text-align: left;
-                    font-size: 9pt;
-                }
-                td {
-                    font-size: 9pt;
-                }
-                .status-pass {
-                    color: #006600;
-                    font-weight: bold;
-                }
-                .status-fail {
-                    color: #cc0000;
-                    font-weight: bold;
-                }
-                pre {
-                    background-color: #f8f9fa;
-                    border: 1px solid #e9ecef;
-                    padding: 10px;
-                    font-family: "Courier New", Courier, monospace;
-                    font-size: 8.5pt;
-                    white-space: pre-wrap;
-                    overflow-x: hidden;
-                }
-                .code-inline {
-                    font-family: "Courier New", Courier, monospace;
-                    background-color: #f1f1f1;
-                    padding: 2px 4px;
-                    font-size: 8.5pt;
-                }
-                .summary-table {
-                    width: 50%;
-                }
-                .summary-table th {
-                    width: 40%;
-                }
-                .page-break {
-                    page-break-before: always;
-                }
-                .toc-list {
-                    list-style-type: none;
-                    padding: 0;
-                }
-                .toc-list li {
-                    margin-bottom: 10px;
-                }
-                .toc-list li a {
-                    text-decoration: none;
-                    color: #000000;
-                    font-size: 11pt;
-                }
-                .toc-list li a::after {
-                    content: leader('.') target-counter(attr(href), page);
-                }
-                .finding-card {
-                    border: 1px solid #cccccc;
-                    border-left: 4px solid #d9534f;
-                    background-color: #fcfcfc;
-                    margin-bottom: 25px;
-                    padding: 15px;
-                    page-break-inside: avoid;
-                }
-                .finding-header {
-                    border-bottom: 1px solid #eeeeee;
-                    padding-bottom: 10px;
-                    margin-bottom: 15px;
-                    font-size: 10.5pt;
-                }
-                .finding-body h4 {
-                    margin-top: 0;
-                    margin-bottom: 5px;
-                    color: #333;
-                    font-size: 10.5pt;
-                }
-                .finding-body pre {
-                    font-size: 9pt;
-                    white-space: pre-wrap;
-                    word-wrap: break-word;
-                    background-color: #f4f4f4;
-                    padding: 12px;
-                    border-radius: 4px;
-                    border: 1px solid #e0e0e0;
-                    margin-bottom: 15px;
-                }
-            </style>
-        </head>
-        <body>
-            <div class="header-container">
-                <div class="logo">AM</div>
-                <div class="title-container">
-                    <h1>AuthMap Enterprise Auditor</h1>
-                    <h2>SOC 2 CC6 Readiness Assessment Report</h2>
-                </div>
-            </div>
+def _iso_date(value: Any) -> str:
+    if not value:
+        return datetime.now(timezone.utc).strftime("%d %b %Y")
+    text = str(value)
+    try:
+        parsed = datetime.fromisoformat(text.replace("Z", "+00:00"))
+        return parsed.strftime("%d %b %Y")
+    except ValueError:
+        return text[:10]
 
-            <div id="index-page"></div>
-            <h2>Table of Contents</h2>
-            <ul class="toc-list">
-                <li><a href="#section-1">Section 1: Executive Access Posture & CC6 Alignment</a></li>
-                <li><a href="#section-2">Section 2: Critical Privilege Escalation & Toxic Combinations</a></li>
-                <li><a href="#section-3">Section 3: Detailed Policy-as-Code Violations</a></li>
-                <li><a href="#section-4">Section 4: IAM Identity Trust Profiles</a></li>
-            </ul>
-            <div class="page-break"></div>
 
-            <h3>Audit Scope & Executive Summary</h3>
-            <table class="summary-table">
-                <tr>
-                    <th>Scope Analyzed</th>
-                    <td>{{ summary.scope_analyzed }}</td>
-                </tr>
-                <tr>
-                    <th>Audit Period</th>
-                    <td>{{ summary.audit_period }}</td>
-                </tr>
-                <tr>
-                    <th>Total Identities Evaluated</th>
-                    <td>{{ summary.total_identities }}</td>
-                </tr>
-                <tr>
-                    <th>Blast Radius Assessment</th>
-                    <td>{{ summary.blast_radius_summary }}</td>
-                </tr>
-            </table>
+def _account_id(scan: Dict[str, Any], entities: List[Dict[str, Any]]) -> str:
+    config = scan.get("config") or {}
+    if isinstance(config, dict):
+        for key in ("aws_account_id", "aws_role_arn", "gcp_project_id"):
+            if config.get(key):
+                return str(config[key])
+    for entity in entities:
+        if entity.get("aws_account_id"):
+            return str(entity["aws_account_id"])
+        if entity.get("gcp_project_id"):
+            return str(entity["gcp_project_id"])
+    return "Not recorded"
 
-            <h3 id="section-1">Section 1: Executive Access Posture & CC6 Alignment</h3>
-            <table>
-                <thead>
-                    <tr>
-                        <th style="width: 25%">Criteria</th>
-                        <th style="width: 15%">Status</th>
-                        <th style="width: 60%">Assessment Notes</th>
-                    </tr>
-                </thead>
-                <tbody>
-                    <tr>
-                        <td>CC6.1 - Logical Access</td>
-                        <td class="{% if summary.cc6_1_status == 'PASS' %}status-pass{% else %}status-fail{% endif %}">{{ summary.cc6_1_status }}</td>
-                        <td>Evaluate implementation of Role-Based Access Control and authentication measures.</td>
-                    </tr>
-                    <tr>
-                        <td>CC6.2 - User Registration</td>
-                        <td class="{% if summary.cc6_2_status == 'PASS' %}status-pass{% else %}status-fail{% endif %}">{{ summary.cc6_2_status }}</td>
-                        <td>Evaluate controls around provisioning and modification of privileged credentials.</td>
-                    </tr>
-                    <tr>
-                        <td>CC6.3 - Least Privilege</td>
-                        <td class="{% if summary.cc6_3_status == 'PASS' %}status-pass{% else %}status-fail{% endif %}">{{ summary.cc6_3_status }}</td>
-                        <td>Evaluate excessive wildcard permissions and revocation mechanisms.</td>
-                    </tr>
-                    <tr>
-                        <td>CC6.6 - Privilege Escalation</td>
-                        <td class="{% if summary.cc6_6_status == 'PASS' %}status-pass{% else %}status-fail{% endif %}">{{ summary.cc6_6_status }}</td>
-                        <td>Evaluate lateral movement vulnerabilities and toxic combinations.</td>
-                    </tr>
-                </tbody>
-            </table>
 
-            <div class="page-break"></div>
-            
-            <h3 id="section-2">Section 2: Critical Privilege Escalation & Toxic Combinations (CC6.6)</h3>
-            {% if summary.privilege_escalation_paths %}
-                <div class="findings-container">
-                    {% for path in summary.privilege_escalation_paths %}
-                    <div class="finding-card">
-                        <div class="finding-header">
-                            <p style="margin: 3px 0;"><strong>Source Identity:</strong> <span class="code-inline">{{ path.source_identity }}</span></p>
-                            <p style="margin: 3px 0;"><strong>Target Admin Role:</strong> <span class="code-inline">{{ path.target_admin_role }}</span></p>
-                            <p style="margin: 3px 0;"><strong>Risk Score:</strong> {{ path.risk_score }} | <strong>Hop:</strong> {{ path.hop }}</p>
-                        </div>
-                        <div class="finding-body">
-                            {% if edition == 'technical' %}
-                                <h4>CLI Remediation:</h4>
-                                <pre>{{ path.cli_command or "No technical remediation available." }}</pre>
-                                <h4>Terraform Remediation:</h4>
-                                <pre>{{ path.terraform_snippet or "No technical remediation available." }}</pre>
-                            {% else %}
-                                <h4>Executive Risk Summary & Advisory:</h4>
-                                <p style="margin-top: 5px;">{{ path.exploit_vector }}</p>
-                            {% endif %}
-                        </div>
-                    </div>
-                    {% endfor %}
-                </div>
-            {% else %}
-                <p>No critical privilege escalation paths (Risk Score &gt;= 80) were detected.</p>
-            {% endif %}
+async def _fetch_bundle(scan_id: str, orchestrator=None) -> Dict[str, Any]:
+    if orchestrator is None:
+        from main import get_orchestrator
 
-            <h3 id="section-3">Section 3: Detailed Policy-as-Code Violations (CC6.3)</h3>
-            {% if summary.policy_evaluations %}
-                {% for eval in summary.policy_evaluations %}
-                <div style="margin-bottom: 20px; border: 1px solid #dddddd; padding: 15px; background-color: #fafafa;">
-                    <p><strong>Rule:</strong> {{ eval.rule_name }} 
-                    <span style="float: right;" class="{% if eval.status == 'COMPLIANT' %}status-pass{% else %}status-fail{% endif %}">{{ eval.status }}</span></p>
-                    <p><strong>Context & Remediation:</strong></p>
-                    <pre>{{ eval.evaluated_context }}</pre>
-                </div>
-                {% endfor %}
-            {% else %}
-                <p>No policy violations were detected.</p>
-            {% endif %}
-            
-            <div class="page-break"></div>
+        orchestrator = get_orchestrator()
 
-            <h3 id="section-4">Section 4: IAM Identity Trust Profiles (CC6.1)</h3>
-            <table>
-                <thead>
-                    <tr>
-                        <th style="width: 15%">Type</th>
-                        <th style="width: 45%">ARN / Identity</th>
-                        <th style="width: 40%">Trust Policy</th>
-                    </tr>
-                </thead>
-                <tbody>
-                    {% for identity in summary.identities %}
-                    <tr>
-                        <td>{{ identity.identity_type }}</td>
-                        <td><span class="code-inline">{{ identity.arn }}</span></td>
-                        <td><pre style="margin:0; padding:5px; font-size:7.5pt;">{{ identity.trust_policy }}</pre></td>
-                    </tr>
-                    {% endfor %}
-                </tbody>
-            </table>
+    scan_rows = orchestrator.supabase.table("iam_scans").select("*").eq("id", scan_id).execute().data
+    if not scan_rows:
+        raise ValueError(f"No scan found for id {scan_id}")
+    scan = scan_rows[0]
 
-        </body>
-        </html>
-        """
+    paths = orchestrator.supabase.table("attack_paths").select("*").eq("scan_id", scan_id).execute().data or []
+    violations = (
+        orchestrator.supabase.table("compliance_violations").select("*").eq("scan_id", scan_id).execute().data or []
+    )
+    entities = orchestrator.supabase.table("scan_entities").select("*").eq("scan_id", scan_id).execute().data or []
 
-    def generate_pdf(self, summary_data: dict, output_path: str, edition: str = "enterprise") -> str:
-        """Validates data through Pydantic, renders Jinja2, and generates WeasyPrint PDF."""
-        # 1. Pydantic Strict Validation
-        validated_summary = CC6AuditSummary(**summary_data)
-        
-        # 2. Jinja2 Render
-        from jinja2 import Environment, BaseLoader
-        env = Environment(loader=BaseLoader(), autoescape=True)
-        template = env.from_string(self.html_template)
-        html_out = template.render(summary=validated_summary, edition=edition)
-        
-        # 3. WeasyPrint Generate
-        from weasyprint import HTML
-        HTML(string=html_out).write_pdf(output_path)
-        return output_path
+    index: Dict[str, Dict[str, Any]] = {}
+    for entity in entities:
+        normalised = normalize_identity(entity)
+        if normalised["arn"]:
+            index[normalised["arn"]] = normalised
 
-async def generate_dynamic_soc2_report(scan_id: str, edition: str = "enterprise") -> str:
-    """Generates realistic IAM scan data representing a SOC 2 audit dynamically from Supabase."""
-    import sys
-    sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-    from main import get_orchestrator
-    from groq import AsyncGroq
-    import json
-    import tempfile
-    
-    orchestrator = get_orchestrator()
-    groq_api_key = os.getenv("GROQ_ALTERNATE_KEY")
-    if not groq_api_key:
-        print("GROQ_ALTERNATE_KEY not found in environment!")
-        return None
-        
-    groq_client = AsyncGroq(api_key=groq_api_key, max_retries=1, timeout=45.0)
-    
-    # Get scan
-    scan_record = orchestrator.supabase.table("iam_scans").select("*").eq("id", scan_id).execute().data
-    if not scan_record:
-        print(f"No scan found in database for id: {scan_id}")
-        return None
-        
-    scan = scan_record[0]
-    
-    paths_res = orchestrator.supabase.table("attack_paths").select("*").eq("scan_id", scan_id).execute()
-    paths = paths_res.data or []
-    
-    violations_res = orchestrator.supabase.table("compliance_violations").select("*").eq("scan_id", scan_id).execute()
-    violations = violations_res.data or []
-    
-    dynamic_identities = []
-    seen_nodes = set()
-    for p in paths:
-        nodes = p.get('path_nodes', {})
-        node_list = nodes.get('nodes', []) if isinstance(nodes, dict) else (nodes if isinstance(nodes, list) else [])
-        for node in node_list:
-            if node not in seen_nodes:
-                seen_nodes.add(node)
-                dynamic_identities.append({
-                    "identity_type": "CloudResource",
-                    "arn": str(node),
-                    "trust_policy": "Managed via IAM Bindings."
-                })
-    
-    if not dynamic_identities:
-        dynamic_identities.append({
-            "identity_type": "Scope",
-            "arn": f"Target: {scan.get('csp_target', 'Unknown')}",
-            "trust_policy": "N/A"
-        })
+    human: Dict[str, Dict[str, Any]] = {
+        arn: record for arn, record in index.items() if is_human_identity(record)
+    }
+    workload_count = sum(1 for record in index.values() if not is_human_identity(record))
 
-    dynamic_policy_evaluations = []
-    for v in violations:
-        dynamic_policy_evaluations.append({
-            "rule_name": v.get("violation_type", "Unknown Rule"),
-            "status": "VIOLATION",
-            "evaluated_context": f"Resource: {v.get('resource_id', 'Unknown')}\n\nDetails:\n{v.get('actual_state', 'No details provided.')}"
-        })
+    # Never show zero identities when the scan clearly evaluated principals:
+    # fall back to the distinct, non-service-linked nodes in the attack paths.
+    if not human:
+        for path in paths:
+            for node in path_nodes(path):
+                if not node or node in human:
+                    continue
+                if is_service_linked_identity({"entity_arn": node}):
+                    continue
+                human[node] = {
+                    "arn": node,
+                    "name": short_name(node),
+                    "type": "Unknown",
+                    "is_admin": False,
+                    "has_mfa": True,
+                    "is_dormant": False,
+                    "is_overprivileged": False,
+                    "risk_score": 0.0,
+                }
 
-    dynamic_escalation_paths = []
-    for i, p in enumerate(paths):
-        nodes = p.get('path_nodes', {})
-        node_list = nodes.get('nodes', []) if isinstance(nodes, dict) else (nodes if isinstance(nodes, list) else [])
-        
-        risk_score = p.get('hybrid_risk_score', 0)
-        
-        exec_sum = "No summary generated."
-        cli = ""
-        tf = ""
-        
-        if risk_score >= 80:
-            try:
-                from collectors.transit_encryption import TransitObfuscator
-                obfuscator = TransitObfuscator(prefix="SEC_")
-                
-                # Extract ARNs or sensitive resource IDs and PII (like UUIDs/Emails) to mask
-                terms_to_mask = TransitObfuscator.extract_sensitive_data(node_list)
-                
-                # Since node_list is a list, we can just mask its string representation
-                node_list_str = obfuscator.mask_terms(json.dumps(node_list), terms_to_mask)
-                
-                # 1. Enterprise Advice via gpt-oss-20b
-                prompt_ent = f"Analyze this specific IAM path and provide a unique 2-sentence executive summary of the risk. You MUST mention the specific resource names to make it dynamic. Return raw JSON: {{\"executive_summary\": \"<string>\"}}. Path: {node_list_str}"
-                try:
-                    res_ent = await groq_client.chat.completions.create(
-                        model="openai/gpt-oss-20b",
-                        messages=[{"role": "user", "content": prompt_ent}],
-                        response_format={"type": "json_object"},
-                        temperature=0.4
-                    )
-                except Exception as e:
-                    if "json_validate_failed" in str(e):
-                        res_ent = await groq_client.chat.completions.create(
-                            model="openai/gpt-oss-20b",
-                            messages=[{"role": "user", "content": prompt_ent}],
-                            temperature=0.4
-                        )
-                    else:
-                        raise e
-                
-                # 2. Technical Code via gpt-oss-120b
-                prompt_tech = f"Analyze this specific IAM path and provide exact remediation code tailored to these exact ARN names. Return raw JSON: {{\"cli_command\": \"<string>\", \"terraform_snippet\": \"<string>\"}}. Path: {node_list_str}"
-                try:
-                    res_tech = await groq_client.chat.completions.create(
-                        model="openai/gpt-oss-120b",
-                        messages=[{"role": "user", "content": prompt_tech}],
-                        response_format={"type": "json_object"},
-                        temperature=0.3
-                    )
-                except Exception as e:
-                    if "json_validate_failed" in str(e):
-                        res_tech = await groq_client.chat.completions.create(
-                            model="openai/gpt-oss-120b",
-                            messages=[{"role": "user", "content": prompt_tech}],
-                            temperature=0.3
-                        )
-                    else:
-                        raise e
-                
-                import re
-                import json
-                
-                # Parse Enterprise
-                match_ent = re.search(r'\{.*\}', res_ent.choices[0].message.content, re.DOTALL)
-                if match_ent:
-                    ent_json = obfuscator.unmask_text(match_ent.group(0))
-                    exec_sum = json.loads(ent_json).get("executive_summary", "")
-                    
-                # Parse Technical
-                match_tech = re.search(r'\{.*\}', res_tech.choices[0].message.content, re.DOTALL)
-                if match_tech:
-                    tech_json = obfuscator.unmask_text(match_tech.group(0))
-                    data = json.loads(tech_json)
-                    cli = data.get("cli_command", "")
-                    tf = data.get("terraform_snippet", "")
-                    
-            except Exception as e:
-                print(f"Failed to generate dynamic LLM remediation for path: {e}")
-        if risk_score >= 80:
-            dynamic_escalation_paths.append({
-                "source_identity": node_list[0] if len(node_list) > 0 else "Unknown Entry",
-                "hop": f"Privilege Escalation Vector",
-                "target_admin_role": node_list[-1] if len(node_list) > 1 else "Unknown Target",
-                "exploit_vector": exec_sum,
-                "cli_command": cli,
-                "terraform_snippet": tf,
-                "risk_score": risk_score
-            })
+    selected = scan.get("selected_compliances") or []
+    if isinstance(selected, str):
+        selected = [part.strip() for part in selected.split(",") if part.strip()]
 
-        breach_cost = sum([p.get('estimated_cost_impact', 0) for p in paths])
-        
-    dynamic_summary = {
-        "scope_analyzed": f"{str(scan.get('csp_target', '')).upper()} (Scan ID: {scan_id})",
-        "total_identities": scan.get("total_entities", len(dynamic_identities)),
-        "blast_radius_summary": f"Total Attack Paths: {len(paths)} | Max Risk: {max([p.get('hybrid_risk_score', 0) for p in paths] + [0])} | Est. Breach Cost: ${breach_cost:,.2f}",
-        "audit_period": str(scan.get("created_at", datetime.now().strftime("%B %Y"))),
-        "cc6_1_status": "FAIL" if violations else "PASS",
-        "cc6_2_status": "FAIL" if paths else "PASS",
-        "cc6_3_status": "FAIL" if violations else "PASS",
-        "cc6_6_status": "FAIL" if paths else "PASS",
-        "identities": dynamic_identities[:10],
-        "policy_evaluations": dynamic_policy_evaluations,
-        "privilege_escalation_paths": dynamic_escalation_paths
+    return {
+        "orchestrator": orchestrator,
+        "scan": scan,
+        "frameworks_in_scope": selected,
+        "paths": paths,
+        "violations": violations,
+        "entities": entities,
+        "index": index,
+        "human": human,
+        "workload_count": workload_count,
     }
 
-    reporter = AuthMapSOC2Reporter()
-    tmp_pdf = tempfile.NamedTemporaryFile(delete=False, suffix=".pdf")
-    output_path = tmp_pdf.name
-    
-    reporter.generate_pdf(dynamic_summary, output_path, edition=edition)
-    return output_path
+
+# ---------------------------------------------------------------------------
+# Executive briefing
+# ---------------------------------------------------------------------------
+
+def build_executive_summary(bundle: Dict[str, Any]) -> Dict[str, Any]:
+    scan = bundle["scan"]
+    paths = [normalize_path(p) for p in bundle["paths"]]
+    violations = bundle["violations"]
+    index = bundle["index"]
+    human = bundle["human"]
+
+    paths.sort(key=lambda p: p["score"], reverse=True)
+    critical = [p for p in paths if p["score"] >= 80]
+    breakdown = severity_breakdown(bundle["paths"])
+    breach_cost = sum(p["cost"] for p in paths)
+    max_risk = max((p["score"] for p in paths), default=0.0)
+
+    injection = sum(1 for h in human.values() if h["is_admin"] and not h["has_mfa"])
+    dormant = sum(1 for h in human.values() if h["is_dormant"])
+
+    top_risks = []
+    for path in paths[:3]:
+        top_risks.append(
+            {
+                "title": f"{path['source']} → {path['target']}",
+                "plain_english": (
+                    f"An identity holding {path['source']} can escalate to {path['target']} "
+                    f"in {max(path['hops'], 1)} hop(s), reaching {path['target_permission']} access."
+                ),
+                "severity": path["severity"].upper(),
+                "score": int(round(path["score"])),
+                "impact": f"${path['cost']:,.0f} estimated exposure",
+            }
+        )
+
+    actions: List[Dict[str, str]] = []
+    if injection:
+        actions.append(
+            {
+                "priority": "P0",
+                "action": f"Enforce MFA on {injection} administrator identities",
+                "owner": "Security Engineering",
+                "window": "7 days",
+                "decision": "Approve enforcement",
+            }
+        )
+    for path in paths[:2]:
+        actions.append(
+            {
+                "priority": "P0" if path["score"] >= 80 else "P1",
+                "action": f"Break escalation edge {path['source']} → {path['target']}",
+                "owner": "IAM Platform Owner",
+                "window": "30 days" if path["score"] >= 80 else "60 days",
+                "decision": "Approve policy change",
+            }
+        )
+    if dormant:
+        actions.append(
+            {
+                "priority": "P1",
+                "action": f"Disable or justify {dormant} dormant identities",
+                "owner": "Identity Governance",
+                "window": "30 days",
+                "decision": "Confirm owners",
+            }
+        )
+    groups = build_violation_groups(violations, index)
+    matrix = compute_control_matrix(
+        violations,
+        index,
+        frameworks_in_scope=bundle.get("frameworks_in_scope"),
+    )
+    if groups:
+        top_group = groups[0]
+        actions.append(
+            {
+                "priority": "P1",
+                "action": f"Remediate “{top_group['violation_type']}” across {top_group['count']} resources",
+                "owner": "IAM Platform Owner",
+                "window": "60 days",
+                "decision": "Approve remediation sprint",
+            }
+        )
+    if not actions:
+        actions.append(
+            {
+                "priority": "—",
+                "action": "No material access findings were recorded for this scan",
+                "owner": "Identity Governance",
+                "window": "—",
+                "decision": "Note only",
+            }
+        )
+
+    return {
+        "scan_id": scan["id"],
+        "scan_name": scan.get("scan_name") or "AuthMap scan",
+        "csp_target": str(scan.get("csp_target") or "cloud").upper(),
+        "audit_date": _iso_date(scan.get("completed_at") or scan.get("created_at")),
+        "total_identities": len(human),
+        "human_count": len(human),
+        "workload_count": bundle["workload_count"],
+        "total_paths": len(paths),
+        "critical_paths": len(critical),
+        "breakdown": breakdown,
+        "max_risk_score": round(max_risk),
+        "breach_cost": breach_cost,
+        "top_3_risks": top_risks,
+        "cc6_controls": compute_cc6_controls(violations, index),
+        "controls": matrix["rows"],
+        "controls_total": matrix["total"],
+        "frameworks": matrix["frameworks"],
+        "frameworks_in_scope": matrix["frameworks_in_scope"],
+        "top_paths": paths[:6],
+        "actions": actions,
+        "violation_count": len(violations),
+        "group_count": len(groups),
+    }
+
+
+EXECUTIVE_TEMPLATE = """<!DOCTYPE html>
+<html lang="en"><head><meta charset="UTF-8"><title>AuthMap Executive Briefing</title>
+<style>
+@page {
+  size: A4;
+  margin: 20mm 18mm 18mm 18mm;
+  @top-left { content: "AUTHMAP · EXECUTIVE SECURITY BRIEFING"; font-family: "DejaVu Sans"; font-size: 7pt; color: #64748b; letter-spacing: 0.08em; }
+  @top-right { content: "CONFIDENTIAL"; font-family: "DejaVu Sans"; font-size: 7pt; color: #b91c1c; letter-spacing: 0.12em; font-weight: bold; }
+  @bottom-left { content: "Scan {{ scan_id }} · {{ audit_date }}"; font-family: "DejaVu Sans"; font-size: 7pt; color: #64748b; }
+  @bottom-right { content: "Page " counter(page) " of " counter(pages); font-family: "DejaVu Sans"; font-size: 7pt; color: #64748b; }
+}
+body { font-family: "DejaVu Sans", "Helvetica Neue", Arial, sans-serif; color: #0f172a; font-size: 9.5pt; line-height: 1.45; margin: 0; }
+h1 { font-size: 21pt; letter-spacing: -0.02em; margin: 0 0 2mm 0; color: #0f172a; }
+h2 { font-size: 13pt; margin: 7mm 0 3mm 0; padding-bottom: 1.5mm; border-bottom: 1px solid #cbd5e1; page-break-after: avoid; }
+h3 { font-size: 10.5pt; margin: 5mm 0 2mm 0; page-break-after: avoid; }
+p { margin: 0 0 2.5mm 0; }
+.sub { color: #475569; font-size: 9pt; margin-bottom: 7mm; }
+.meta { color: #64748b; font-size: 7.8pt; }
+.rule-top { border-top: 3px solid #0f172a; margin: 4mm 0 5mm 0; }
+table.kpi { width: 100%; border-collapse: separate; border-spacing: 3mm 0; table-layout: fixed; margin: 0 0 6mm 0; }
+table.kpi td { width: 25%; border: 1px solid #e2e8f0; background: #ffffff; padding: 4mm 3mm; vertical-align: top; }
+table.kpi .v { font-size: 19pt; font-weight: bold; letter-spacing: -0.02em; }
+table.kpi .l { font-size: 7.2pt; text-transform: uppercase; letter-spacing: 0.07em; color: #64748b; margin-top: 1mm; }
+.crit { border-left: 3px solid #b91c1c !important; }
+.warn { border-left: 3px solid #b45309 !important; }
+table.grid { width: 100%; border-collapse: collapse; table-layout: fixed; }
+table.grid th { background: #f1f5f9; color: #334155; font-size: 7.8pt; text-align: left; padding: 2.4mm; border: 1px solid #e2e8f0; }
+table.grid td { font-size: 8.3pt; padding: 2.4mm; border: 1px solid #e2e8f0; vertical-align: top; overflow-wrap: anywhere; }
+tr.pass td { background: #f0fdf4; }
+tr.fail td { background: #fef2f2; }
+tr.partial td { background: #fffbeb; }
+.badge { font-weight: bold; font-size: 7.6pt; letter-spacing: 0.05em; }
+.pass .badge { color: #15803d; }
+.fail .badge { color: #b91c1c; }
+.partial .badge { color: #b45309; }
+.risk { border: 1px solid #e2e8f0; border-left: 3px solid #b91c1c; padding: 3mm 4mm; margin-bottom: 3mm; page-break-inside: avoid; }
+.risk .t { font-weight: bold; font-size: 10pt; margin-bottom: 1mm; }
+.note { background: #f8fafc; border: 1px solid #e2e8f0; padding: 3mm; font-size: 7.8pt; color: #475569; margin-top: 4mm; }
+.pb { page-break-before: always; }
+thead { display: table-header-group; }
+</style></head><body>
+
+<div class="meta">CLASSIFICATION: CONFIDENTIAL · SCAN {{ scan_id }} · {{ audit_date }}</div>
+<h1>Executive Security Briefing</h1>
+<p class="sub">{{ scan_name }} · {{ csp_target }} scope · prepared for executive and ministerial review</p>
+<div class="rule-top"></div>
+
+<table class="kpi"><tr>
+  <td><div class="v">{{ total_identities }}</div><div class="l">Identities evaluated</div><div class="meta">{{ human_count }} human · {{ workload_count }} workload</div></td>
+  <td class="crit"><div class="v">{{ critical_paths }}</div><div class="l">Critical attack paths</div><div class="meta">score ≥ 80 of {{ total_paths }} total</div></td>
+  <td><div class="v">{{ max_risk_score }}</div><div class="l">Max blast-radius score</div><div class="meta">0–100 hybrid risk</div></td>
+  <td class="warn"><div class="v">${{ breach_cost|money }}</div><div class="l">Quantified exposure</div><div class="meta">estimated annualised loss</div></td>
+</tr></table>
+
+<h2>Top systemic risks</h2>
+{% if top_3_risks %}
+  {% for risk in top_3_risks %}
+  <div class="risk">
+    <div class="t">{{ risk.title }}</div>
+    <div>{{ risk.plain_english }}</div>
+    <div class="meta">{{ risk.severity }} · score {{ risk.score }} · {{ risk.impact }}</div>
+  </div>
+  {% endfor %}
+{% else %}
+  <p>No privilege-escalation paths were recorded for this scan. Absence of findings reflects the evidence available at scan time, not proof that the environment is risk-free.</p>
+{% endif %}
+
+<h2>Immediate governance actions</h2>
+<table class="grid">
+<thead><tr><th style="width:10%">Priority</th><th style="width:40%">Action</th><th style="width:19%">Owner</th><th style="width:13%">Window</th><th style="width:18%">Decision required</th></tr></thead>
+<tbody>
+{% for action in actions %}
+<tr><td>{{ action.priority }}</td><td>{{ action.action }}</td><td>{{ action.owner }}</td><td>{{ action.window }}</td><td>{{ action.decision }}</td></tr>
+{% endfor %}
+</tbody></table>
+
+<div class="pb"></div>
+<h2>Compliance posture</h2>
+<p class="meta">Frameworks in scope: {{ frameworks_in_scope|join(', ') if frameworks_in_scope else 'not recorded for this scan' }}{% if controls_total > controls|length %} · showing top {{ controls|length }} of {{ controls_total }} control groups{% endif %}</p>
+{% if controls %}
+<table class="grid">
+<thead><tr><th style="width:18%">Control</th><th style="width:10%">Framework</th><th style="width:9%">Status</th><th style="width:7%">Human</th><th style="width:8%">Workload</th><th style="width:28%">Business impact</th><th style="width:20%">Owner</th></tr></thead>
+<tbody>
+{% for control in controls %}
+<tr class="{{ control.status|lower }}">
+  <td><strong>{{ control.control }}</strong></td>
+  <td>{{ control.framework }}</td>
+  <td><span class="badge">{{ control.status }}</span></td>
+  <td>{{ control.human_count }}</td>
+  <td>{{ control.workload_count }}</td>
+  <td>{{ control.impact }}</td>
+  <td>{{ control.owner }}</td>
+</tr>
+{% endfor %}
+</tbody></table>
+{% else %}
+<p>No compliance violations and no framework scope were recorded for this scan, so no posture can be asserted. This is an evidence gap, not a pass.</p>
+{% endif %}
+
+<h3>How to read this table</h3>
+<p><strong>PASS</strong> means the framework was in scope and no violation was recorded. <strong>PARTIAL</strong> means violations affect workload or AWS-managed resources only, which are not human-remediable. <strong>FAIL</strong> means at least one human identity is affected and requires an owner decision. Rows are generated from this scan's recorded violations — there is no fixed control checklist, so DPDP, RBI, PCI-DSS, GDPR, HIPAA, ISO 27001, SEBI, IRDAI, IT Act and unmapped frameworks all render from the same pipeline.</p>
+<div class="note">
+Verified telemetry: {{ human_count }} human identities, {{ total_paths }} recorded attack path(s), {{ violation_count }} compliance violation(s) across {{ group_count }} root-cause rule group(s).
+AWS service-linked roles and AWS-managed policies are excluded from human MFA and least-privilege counts. Resources whose classification was unavailable are counted conservatively as human.
+</div>
+
+<div class="pb"></div>
+<h2>Top privilege-escalation paths and blast radius</h2>
+{% if top_paths %}
+<table class="grid">
+<thead><tr><th style="width:38%">Entry → crown-jewel chain</th><th style="width:11%">Severity</th><th style="width:9%">Score</th><th style="width:42%">Business consequence</th></tr></thead>
+<tbody>
+{% for path in top_paths %}
+<tr>
+  <td>{{ path.chain }}</td>
+  <td>{{ path.severity|upper }}</td>
+  <td>{{ path.score|round|int }}</td>
+  <td>Administrative control of {{ path.target|short }}; estimated ${{ path.cost|money }} exposure.</td>
+</tr>
+{% endfor %}
+</tbody></table>
+{% else %}
+<p>No escalation paths were recorded for this scan.</p>
+{% endif %}
+
+<h3>Financial exposure</h3>
+<p>Aggregate estimated exposure across recorded paths is <strong>${{ breach_cost|money }}</strong>, with a maximum single-path blast-radius score of <strong>{{ max_risk_score }}/100</strong>. Figures are model-based estimates for prioritisation, not audited losses.</p>
+
+<h2>Action sign-off</h2>
+<table class="grid">
+<thead><tr><th style="width:40%">Action</th><th style="width:20%">Owner</th><th style="width:14%">Due</th><th style="width:26%">Sign-off</th></tr></thead>
+<tbody>
+{% for action in actions %}
+<tr><td>{{ action.action }}</td><td>{{ action.owner }}</td><td>{{ action.window }}</td><td>Name / date: ____________________</td></tr>
+{% endfor %}
+</tbody></table>
+
+<div class="note">
+Prepared by AuthMap from stored scan telemetry for scan {{ scan_id }} on {{ audit_date }}. Findings are point-in-time and limited to the credentials and APIs available to the scanner. This briefing is a decision aid, not a certification of compliance.
+</div>
+
+</body></html>"""
+
+
+class AuthMapExecutiveReporter:
+    """Renders the 3-5 page executive briefing dossier."""
+
+    def generate_pdf(self, data: Dict[str, Any], output_path: str) -> str:
+        from jinja2 import Environment
+        from weasyprint import HTML
+
+        env = Environment(autoescape=True)
+        env.filters["money"] = lambda value: f"{float(value or 0):,.0f}"
+        env.filters["short"] = short_name
+        env.filters["wrap"] = wrap_long_id
+        template = env.from_string(EXECUTIVE_TEMPLATE)
+        html = template.render(**data)
+        HTML(string=html).write_pdf(output_path)
+        return output_path
+
+
+async def generate_executive_brief(scan_id: str, orchestrator=None) -> str:
+    bundle = await _fetch_bundle(scan_id, orchestrator)
+    data = build_executive_summary(bundle)
+    out = tempfile.NamedTemporaryFile(delete=False, suffix=".pdf")
+    out.close()
+    return AuthMapExecutiveReporter().generate_pdf(data, out.name)
+
+
+# ---------------------------------------------------------------------------
+# Technical runbook
+# ---------------------------------------------------------------------------
+
+_MFA_POLICY = (
+    '{\n  "Version": "2012-10-17",\n  "Statement": [{\n'
+    '    "Sid": "DenyAllWithoutMFA",\n    "Effect": "Deny",\n    "Action": "*",\n'
+    '    "Resource": "*",\n    "Condition": {\n      "BoolIfExists": {\n'
+    '        "aws:MultiFactorAuthPresent": "false"\n      }\n    }\n  }]\n}'
+)
+
+_LEAST_PRIVILEGE_POLICY = (
+    '{\n  "Version": "2012-10-17",\n  "Statement": [{\n'
+    '    "Sid": "DenyPrivilegeEscalationActions",\n    "Effect": "Deny",\n'
+    '    "Action": ["iam:*", "organizations:*", "sts:AssumeRole"],\n'
+    '    "Resource": "*"\n  }]\n}'
+)
+
+
+def _fallback_remediation(rule: str) -> Dict[str, str]:
+    """Rule-aware, honest fallbacks used when the LLM is unavailable.
+
+    These never invent resource names; they emit real, generic guardrails that
+    match the rule family so every framework/rule still gets usable guidance.
+    """
+    text = str(rule or "").lower()
+    base = {
+        "iam_policy_diff": (
+            "# No automated policy was generated for this rule.\n"
+            "# Scope the listed principals to the minimum actions required by their workload."
+        ),
+        "terraform_snippet": "# Terraform snippet unavailable for this rule.",
+        "verification_cli": "aws iam get-account-authorization-details --output json",
+    }
+
+    if "mfa" in text or "multi-factor" in text or "2fa" in text:
+        base["iam_policy_diff"] = _MFA_POLICY
+        base["terraform_snippet"] = (
+            'resource "aws_iam_policy" "require_mfa" {\n'
+            '  name   = "AuthMapRequireMFA"\n'
+            '  policy = jsonencode({\n'
+            '    Version = "2012-10-17"\n    Statement = [{\n'
+            '      Sid      = "DenyAllWithoutMFA"\n      Effect   = "Deny"\n'
+            '      Action   = "*"\n      Resource = "*"\n'
+            '      Condition = { BoolIfExists = { "aws:MultiFactorAuthPresent" = "false" } }\n'
+            '    }]\n  })\n}'
+        )
+        base["verification_cli"] = "aws iam get-account-summary --query SummaryMap.AccountMFAEnabled"
+    elif "dormant" in text or "inactive" in text or "unused" in text:
+        base["verification_cli"] = (
+            "aws iam get-credential-report --output text "
+            "# then review password_last_used / access_key_last_used per principal"
+        )
+    elif any(word in text for word in ("overprivileg", "least privilege", "wildcard", "admin")):
+        base["iam_policy_diff"] = _LEAST_PRIVILEGE_POLICY
+        base["terraform_snippet"] = (
+            'resource "aws_iam_policy" "guardrail" {\n'
+            '  name   = "AuthMapPrivilegeEscalationGuardrail"\n'
+            '  policy = jsonencode({\n'
+            '    Version = "2012-10-17"\n    Statement = [{\n'
+            '      Sid      = "DenyPrivilegeEscalationActions"\n      Effect   = "Deny"\n'
+            '      Action   = ["iam:*", "organizations:*", "sts:AssumeRole"]\n'
+            '      Resource = "*"\n    }]\n  })\n}'
+        )
+        base["verification_cli"] = "aws iam list-attached-role-policies --role-name <ROLE_NAME>"
+    elif "public" in text or "exposed" in text:
+        base["terraform_snippet"] = (
+            'resource "aws_s3_bucket_public_access_block" "block" {\n'
+            '  bucket                  = var.bucket_name\n'
+            '  block_public_acls       = true\n  block_public_policy     = true\n'
+            '  ignore_public_acls      = true\n  restrict_public_buckets = true\n}'
+        )
+        base["verification_cli"] = "aws s3api get-public-access-block --bucket <BUCKET_NAME>"
+    elif "encrypt" in text:
+        base["verification_cli"] = "aws s3api get-bucket-encryption --bucket <BUCKET_NAME>"
+    elif "root" in text and "key" in text:
+        base["verification_cli"] = "aws iam list-access-keys --user-name root  # requires root credentials"
+
+    return base
+
+
+async def _generate_group_remediation(
+    group: Dict[str, Any], api_key: str, semaphore: asyncio.Semaphore
+) -> Dict[str, str]:
+    from groq import AsyncGroq
+
+    sample_arns = [r["arn"] for r in group["resources"][:8]]
+    prompt = (
+        "You are an AWS IAM remediation engineer. Return JSON only with keys "
+        "iam_policy_diff, terraform_snippet, verification_cli.\n"
+        f"Rule: {group['violation_type']} ({group['framework']}).\n"
+        f"Affected resources: {json.dumps(sample_arns)}\n"
+        "iam_policy_diff must be a least-privilege IAM policy JSON string that removes the risky action. "
+        "terraform_snippet must be valid HCL. verification_cli must be one AWS CLI command. "
+        "Do not invent resource identifiers beyond those provided."
+    )
+
+    async with semaphore:
+        try:
+            client = AsyncGroq(api_key=api_key, max_retries=1, timeout=15.0)
+            response = await client.chat.completions.create(
+                model="openai/gpt-oss-20b",
+                messages=[{"role": "user", "content": prompt}],
+                response_format={"type": "json_object"},
+                temperature=0.2,
+                max_tokens=700,
+            )
+            match = re.search(r"\{.*\}", response.choices[0].message.content or "", re.DOTALL)
+            if not match:
+                return _fallback_remediation(group["violation_type"])
+            parsed = json.loads(match.group(0))
+            result = _fallback_remediation(group["violation_type"])
+            for key in ("iam_policy_diff", "terraform_snippet", "verification_cli"):
+                value = parsed.get(key)
+                if isinstance(value, str) and value.strip():
+                    result[key] = value.strip()
+            return result
+        except Exception:
+            return _fallback_remediation(group["violation_type"])
+
+
+async def build_technical_summary(scan_id: str, orchestrator=None, api_key: Optional[str] = None) -> Dict[str, Any]:
+    bundle = await _fetch_bundle(scan_id, orchestrator)
+    scan = bundle["scan"]
+    index = bundle["index"]
+    paths = [normalize_path(p) for p in bundle["paths"]]
+    paths.sort(key=lambda p: p["score"], reverse=True)
+    breakdown = severity_breakdown(bundle["paths"])
+
+    all_groups = build_violation_groups(bundle["violations"], index)
+    groups_total = len(all_groups)
+    groups = all_groups[:MAX_TECH_GROUPS]
+
+    api_key = api_key or os.getenv("GROQ_ALTERNATE_KEY") or os.getenv("GROQ_API_KEY")
+    if api_key and groups:
+        semaphore = asyncio.Semaphore(4)
+        results = await asyncio.gather(
+            *[
+                _generate_group_remediation(group, api_key, semaphore)
+                if position < MAX_LLM_GROUPS
+                else asyncio.sleep(0, result=_fallback_remediation(group["violation_type"]))
+                for position, group in enumerate(groups)
+            ]
+        )
+        for group, remediation in zip(groups, results):
+            group.update(remediation or _fallback_remediation(group["violation_type"]))
+    else:
+        for group in groups:
+            group.update(_fallback_remediation(group["violation_type"]))
+
+    human_identities = sorted(
+        bundle["human"].values(), key=lambda h: (-h["risk_score"], h["name"])
+    )[:MAX_INVENTORY_ROWS]
+
+    return {
+        "scan_id": scan["id"],
+        "scan_name": scan.get("scan_name") or "AuthMap scan",
+        "csp_target": str(scan.get("csp_target") or "cloud").upper(),
+        "aws_account_id": _account_id(scan, bundle["entities"]),
+        "audit_date": _iso_date(scan.get("completed_at") or scan.get("created_at")),
+        "total_identities": len(bundle["human"]),
+        "human_count": len(bundle["human"]),
+        "workload_count": bundle["workload_count"],
+        "total_paths": len(paths),
+        "breakdown": breakdown,
+        "max_risk_score": round(max((p["score"] for p in paths), default=0.0)),
+        "breach_cost": sum(p["cost"] for p in paths),
+        "total_violations": len(bundle["violations"]),
+        "attack_paths": paths[:MAX_TECH_PATHS],
+        "attack_paths_total": len(paths),
+        "violation_groups": groups,
+        "violation_groups_total": groups_total,
+        "human_identities": human_identities,
+        "human_identities_total": len(bundle["human"]),
+    }
+
+
+TECHNICAL_TEMPLATE = """<!DOCTYPE html>
+<html lang="en"><head><meta charset="UTF-8"><title>AuthMap Engineering Runbook</title>
+<style>
+@page {
+  size: A4;
+  margin: 17mm 15mm 16mm 15mm;
+  @top-left { content: "AUTHMAP · ENGINEERING REMEDIATION RUNBOOK"; font-family: "DejaVu Sans"; font-size: 7pt; color: #64748b; letter-spacing: 0.08em; }
+  @top-right { content: "CONFIDENTIAL · {{ scan_id }}"; font-family: "DejaVu Sans"; font-size: 7pt; color: #64748b; }
+  @bottom-left { content: "Generated {{ audit_date }}"; font-family: "DejaVu Sans"; font-size: 7pt; color: #64748b; }
+  @bottom-right { content: "Page " counter(page) " of " counter(pages); font-family: "DejaVu Sans"; font-size: 7pt; color: #64748b; }
+}
+body { font-family: "DejaVu Sans", "Helvetica Neue", Arial, sans-serif; color: #0f172a; font-size: 8.8pt; line-height: 1.4; margin: 0; }
+h1 { font-size: 17pt; margin: 0 0 1.5mm 0; letter-spacing: -0.02em; }
+h2 { font-size: 12pt; margin: 7mm 0 3mm 0; padding-top: 2mm; border-top: 1.5px solid #0f172a; page-break-after: avoid; }
+h3 { font-size: 10pt; margin: 5mm 0 2mm 0; page-break-after: avoid; }
+h4 { font-size: 8.6pt; margin: 3mm 0 1.5mm 0; page-break-after: avoid; text-transform: uppercase; letter-spacing: 0.05em; color: #334155; }
+p { margin: 0 0 2mm 0; }
+.meta { color: #64748b; font-size: 7.6pt; }
+.sub { color: #475569; font-size: 8.4pt; margin-bottom: 4mm; }
+table.telem { width: 100%; border-collapse: collapse; table-layout: fixed; margin-bottom: 4mm; }
+table.telem th { width: 22%; background: #f1f5f9; text-align: left; font-size: 7.6pt; color: #334155; padding: 1.8mm; border: 1px solid #e2e8f0; }
+table.telem td { font-size: 8pt; padding: 1.8mm; border: 1px solid #e2e8f0; overflow-wrap: anywhere; }
+table.grid { width: 100%; border-collapse: collapse; table-layout: fixed; margin: 2mm 0; }
+table.grid th { background: #f1f5f9; color: #334155; font-size: 7.4pt; text-align: left; padding: 1.6mm; border: 1px solid #e2e8f0; }
+table.grid td { font-size: 7.6pt; padding: 1.6mm; border: 1px solid #e2e8f0; vertical-align: top; overflow-wrap: anywhere; }
+thead { display: table-header-group; }
+tr { page-break-inside: avoid; }
+.code-inline { font-family: "DejaVu Sans Mono", "Courier New", monospace; background: #f1f5f9; padding: 0 1mm; font-size: 7.2pt; overflow-wrap: anywhere; }
+.trace { border: 1px solid #e2e8f0; border-left: 3px solid #3b82f6; padding: 2.5mm 3mm; margin-bottom: 2.5mm; page-break-inside: avoid; }
+.trace .head { font-weight: bold; font-size: 8.6pt; margin-bottom: 1mm; }
+.trace .head .sev { font-weight: normal; letter-spacing: 0.05em; }
+.chain { font-family: "DejaVu Sans Mono", "Courier New", monospace; background: #f8fafc; border: 1px solid #e2e8f0; padding: 1.8mm 2mm; font-size: 7.4pt; overflow-wrap: anywhere; margin: 1.5mm 0; }
+.group { border: 1px solid #e2e8f0; padding: 3mm; margin-bottom: 3.5mm; }
+.group .ghead { font-weight: bold; font-size: 9.2pt; }
+.group .gsub { color: #64748b; font-size: 7.6pt; margin-bottom: 1.5mm; }
+pre { font-family: "DejaVu Sans Mono", "Courier New", monospace; background: #f8fafc; border: 1px solid #e2e8f0; padding: 2mm; font-size: 6.9pt; line-height: 1.35; white-space: pre-wrap; overflow-wrap: anywhere; margin: 0 0 2mm 0; }
+.sev-critical { color: #b91c1c; font-weight: bold; }
+.sev-high { color: #b45309; font-weight: bold; }
+.sev-medium { color: #a16207; }
+.sev-low { color: #475569; }
+.note { background: #f8fafc; border: 1px solid #e2e8f0; padding: 2.5mm; font-size: 7.4pt; color: #475569; margin: 3mm 0; }
+.pb { page-break-before: always; }
+</style></head><body>
+
+<div class="meta">CONFIDENTIAL · SCAN {{ scan_id }} · {{ audit_date }}</div>
+<h1>Engineering Remediation Runbook</h1>
+<p class="sub">{{ scan_name }} · {{ csp_target }} · account {{ aws_account_id }}</p>
+
+<table class="telem">
+<tr><th>Identities</th><td>{{ total_identities }} human · {{ workload_count }} workload</td><th>Attack paths</th><td>{{ total_paths }} (critical {{ breakdown.critical }}, high {{ breakdown.high }}, medium {{ breakdown.medium }}, low {{ breakdown.low }}{% if breakdown.other %}, other {{ breakdown.other }}{% endif %})</td></tr>
+<tr><th>Violations</th><td>{{ total_violations }} across {{ violation_groups_total }} root-cause groups</td><th>Max risk</th><td>{{ max_risk_score }}/100 · exposure ${{ breach_cost|money }}</td></tr>
+<tr><th>Graph telemetry</th><td colspan="3">Stored scan entities and traversal results for this scan; unverified counts are stated explicitly rather than inferred.</td></tr>
+</table>
+
+<h2>Attack-path traces</h2>
+{% if attack_paths %}
+<p class="meta">Showing {{ attack_paths|length }} of {{ attack_paths_total }} recorded paths, highest risk first.</p>
+{% for path in attack_paths %}
+<div class="trace">
+  <div class="head">PATH {{ loop.index }} · SCORE {{ path.score|round|int }}/100 · <span class="sev-{{ path.severity }}">{{ path.severity|upper }}</span></div>
+  <div class="chain">{{ path.chain|wrap }}</div>
+  <div><strong>Trust boundary:</strong> {{ path.description or "Privilege escalation chain recorded by graph analysis." }}</div>
+  <div class="meta">Hops: {{ path.hops }} · estimated exposure ${{ path.cost|money }}</div>
+</div>
+{% endfor %}
+{% else %}
+<p>No attack paths were recorded for this scan.</p>
+{% endif %}
+
+<h2>Policy-as-code violations and remediation</h2>
+{% if violation_groups %}
+<p class="meta">One entry per root-cause rule ({{ violation_groups_total }} groups in total, {{ violation_groups|length }} shown). AWS service-linked roles and AWS-managed policies are excluded.</p>
+{% for group in violation_groups %}
+<div class="group">
+  <div class="ghead">{{ group.violation_type }} <span class="sev-{{ group.severity }}">· {{ group.severity|upper }}</span></div>
+  <div class="gsub">{{ group.framework }} · {{ group.count }} affected resource(s)</div>
+  <table class="grid">
+    <thead><tr><th style="width:64%">Resource</th><th style="width:20%">Type</th><th style="width:16%">Severity</th></tr></thead>
+    <tbody>
+    {% for resource in group.resources[:15] %}
+      <tr><td class="code-inline">{{ resource.arn|wrap }}</td><td>{{ resource.type }}</td><td class="sev-{{ resource.severity }}">{{ resource.severity|upper }}</td></tr>
+    {% endfor %}
+    </tbody>
+  </table>
+  {% if group.count > 15 %}<p class="meta">…and {{ group.count - 15 }} more resource(s) in this group.</p>{% endif %}
+
+  <h4>AI-recommended remediation</h4>
+  <div><strong>Least-privilege IAM policy</strong></div>
+  <pre>{{ group.iam_policy_diff }}</pre>
+  <div><strong>Terraform</strong></div>
+  <pre>{{ group.terraform_snippet }}</pre>
+  <div><strong>Verification</strong></div>
+  <pre>{{ group.verification_cli }}</pre>
+</div>
+{% endfor %}
+{% else %}
+<p>No compliance violations were recorded for this scan.</p>
+{% endif %}
+
+<h2>Identity and trust-boundary inventory</h2>
+<table class="grid">
+<thead><tr><th style="width:44%">ARN / identity</th><th style="width:9%">Type</th><th style="width:7%">Admin</th><th style="width:7%">MFA</th><th style="width:9%">Dormant</th><th style="width:12%">Over-priv.</th><th style="width:12%">Risk score</th></tr></thead>
+<tbody>
+{% for identity in human_identities %}
+<tr>
+  <td class="code-inline">{{ identity.arn|wrap }}</td>
+  <td>{{ identity.type }}</td>
+  <td>{{ identity.is_admin|yn }}</td>
+  <td>{{ identity.has_mfa|yn }}</td>
+  <td>{{ identity.is_dormant|yn }}</td>
+  <td>{{ identity.is_overprivileged|yn }}</td>
+  <td>{{ identity.risk_score|round|int }}</td>
+</tr>
+{% endfor %}
+</tbody></table>
+{% if human_identities_total > human_identities|length %}
+<p class="meta">Showing {{ human_identities|length }} of {{ human_identities_total }} human identities, highest risk first.</p>
+{% endif %}
+
+<div class="note">
+Generated by AuthMap for scan {{ scan_id }}. Remediation snippets are advisory and must be reviewed against your change-management process. Counts reflect stored scan telemetry at generation time.
+</div>
+
+</body></html>"""
+
+
+class AuthMapTechnicalReporter:
+    """Renders the deduplicated engineering runbook."""
+
+    def generate_pdf(self, data: Dict[str, Any], output_path: str) -> str:
+        from jinja2 import Environment
+        from weasyprint import HTML
+
+        env = Environment(autoescape=True)
+        env.filters["money"] = lambda value: f"{float(value or 0):,.0f}"
+        env.filters["short"] = short_name
+        env.filters["wrap"] = wrap_long_id
+        env.filters["yn"] = lambda value: "Yes" if value else "No"
+        template = env.from_string(TECHNICAL_TEMPLATE)
+        html = template.render(**data)
+        HTML(string=html).write_pdf(output_path)
+        return output_path
+
+
+async def generate_technical_runbook(scan_id: str, orchestrator=None) -> str:
+    data = await build_technical_summary(scan_id, orchestrator)
+    out = tempfile.NamedTemporaryFile(delete=False, suffix=".pdf")
+    out.close()
+    return AuthMapTechnicalReporter().generate_pdf(data, out.name)
+
+
+# ---------------------------------------------------------------------------
+# Backwards-compatible alias (old callers used edition="enterprise"|"technical")
+# ---------------------------------------------------------------------------
+
+async def generate_dynamic_soc2_report(scan_id: str, edition: str = "enterprise") -> Optional[str]:
+    if edition == "technical":
+        return await generate_technical_runbook(scan_id)
+    return await generate_executive_brief(scan_id)
+
 
 if __name__ == "__main__":
     from dotenv import load_dotenv
+
     load_dotenv()
-    
-    async def main():
+
+    async def _main() -> None:
+        from main import get_orchestrator
+
         orchestrator = get_orchestrator()
-        scan_record = orchestrator.supabase.table("iam_scans").select("*").order("started_at", desc=True).limit(1).execute().data
-        if not scan_record:
+        rows = (
+            orchestrator.supabase.table("iam_scans")
+            .select("id")
+            .order("started_at", desc=True)
+            .limit(1)
+            .execute()
+            .data
+        )
+        if not rows:
+            print("No scans found")
             return
-        test_scan_id = scan_record[0]["id"]
-        out_ent = await generate_dynamic_soc2_report(test_scan_id, edition="enterprise")
-        out_tech = await generate_dynamic_soc2_report(test_scan_id, edition="technical")
-        
-        if out_ent and out_tech:
-            print(f"Dynamic SOC 2 Enterprise report generated at: {out_ent}")
-            print(f"Dynamic SOC 2 Technical report generated at: {out_tech}")
-            
-    asyncio.run(main())
+        scan_id = rows[0]["id"]
+        brief = await generate_executive_brief(scan_id, orchestrator)
+        runbook = await generate_technical_runbook(scan_id, orchestrator)
+        print(f"Executive brief: {brief}")
+        print(f"Technical runbook: {runbook}")
+
+    asyncio.run(_main())

@@ -946,8 +946,23 @@ async def download_scan_data(
 ):
     import glob as _glob
 
-    if file_type not in ("json", "csv", "findings", "enterprise", "technical"):
-        raise HTTPException(status_code=400, detail="file_type must be 'json', 'csv', 'findings', 'enterprise', or 'technical'")
+    if file_type not in (
+        "json",
+        "csv",
+        "findings",
+        "executive",
+        "technical-runbook",
+        # legacy aliases kept so old links keep working
+        "enterprise",
+        "technical",
+    ):
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                "file_type must be 'json', 'csv', 'findings', 'executive', "
+                "'technical-runbook' (legacy: 'enterprise', 'technical')"
+            ),
+        )
         
     orchestrator = get_orchestrator()
     verify_scan_ownership(scan_id, clerk_id, orchestrator)
@@ -1013,37 +1028,49 @@ async def download_scan_data(
             filename=f"authmap_findings_{scan_id}.pdf"
         )
 
-    if file_type in ("enterprise", "technical"):
-        from collectors.authmap_reporter import generate_dynamic_soc2_report
-        
-        pdf_path = await generate_dynamic_soc2_report(scan_id, edition=file_type)
+    if file_type in ("executive", "enterprise", "technical", "technical-runbook"):
+        from collectors.authmap_reporter import (
+            generate_executive_brief,
+            generate_technical_runbook,
+        )
+
+        is_executive = file_type in ("executive", "enterprise")
+        if is_executive:
+            pdf_path = await generate_executive_brief(scan_id, orchestrator)
+            report_type = "executive_brief"
+            download_name = f"authmap_executive_brief_{scan_id}.pdf"
+        else:
+            pdf_path = await generate_technical_runbook(scan_id, orchestrator)
+            report_type = "technical_runbook"
+            download_name = f"authmap_technical_runbook_{scan_id}.pdf"
+
         if not pdf_path:
-            raise HTTPException(status_code=500, detail="Failed to generate dynamic SOC 2 report")
-            
+            raise HTTPException(status_code=500, detail="Failed to generate report")
+
         scan_record = orchestrator.supabase.table("iam_scans").select("*").eq("id", scan_id).execute().data
         scan = scan_record[0] if scan_record else {}
-        
+
         # Insert into scan_reports table
         try:
-            clerk_id = scan.get("clerk_id", "unknown")
+            report_clerk_id = scan.get("clerk_id", "unknown")
             import os
             file_size = os.path.getsize(pdf_path) if os.path.exists(pdf_path) else 0
-            
+
             # Create a simple JSON serializable summary
             stats_raw = scan.get("summary", {})
             stats = stats_raw if isinstance(stats_raw, dict) else {}
-            
+
             safe_stats = {
                 "total_nodes": int(stats.get("total_nodes", 0)),
                 "total_paths": int(stats.get("total_paths", 0)),
                 "max_risk": float(stats.get("max_risk", 0)),
                 "breach_cost": float(stats.get("breach_cost", 0))
             }
-            
+
             orchestrator.supabase.table("scan_reports").insert({
                 "scan_id": scan_id,
-                "clerk_id": clerk_id,
-                "report_type": "executive_summary",
+                "clerk_id": report_clerk_id,
+                "report_type": report_type,
                 "report_format": "pdf",
                 "storage_path": pdf_path,
                 "file_size_bytes": file_size,
@@ -1051,11 +1078,11 @@ async def download_scan_data(
             }).execute()
         except Exception as e:
             logger.error(f"Failed to insert scan_reports record: {e}")
-        
+
         return FileResponse(
             pdf_path,
             media_type="application/pdf",
-            filename=f"authmap_enterprise_report_{scan_id}.pdf"
+            filename=download_name,
         )
 
     graph_data = orchestrator.get_graph_for_cytoscape(scan_id)

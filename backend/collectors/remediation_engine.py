@@ -6,6 +6,7 @@ from jinja2 import Environment, FileSystemLoader, BaseLoader, select_autoescape
 from datetime import datetime
 from groq import AsyncGroq
 from collectors.breach_cost_estimator import ComplianceFramework
+from collectors.report_utils import is_human_identity, is_service_linked_identity
 
 logger = logging.getLogger(__name__)
 
@@ -15,7 +16,13 @@ class ComplianceMapper:
         violations = []
         node_id = node.get('id') or node.get('name') or 'Unknown'
         node_type = node.get('type', 'Unknown')
-        
+
+        # AWS service-linked roles and AWS-managed policies are non-human and
+        # cannot be remediated by the customer: never emit findings for them.
+        identity = {"entity_arn": node_id, "entity_type": node_type}
+        if is_service_linked_identity(identity):
+            return []
+
         is_dormant = node.get('is_dormant', False)
         has_mfa = node.get('has_mfa', False)
         is_overprivileged = node.get('is_overprivileged', False)
@@ -41,7 +48,7 @@ class ComplianceMapper:
                 ComplianceFramework.IT_ACT: ("[Tier 1] IT Act Sec 43A", f"Dormant account {node_id} fails to maintain reasonable security practices."),
             })
 
-        if is_admin and not has_mfa:
+        if is_admin and not has_mfa and is_human_identity(identity):
             rule_mappings.append({
                 ComplianceFramework.SOC2: ("[Tier 1] SOC2 CC6.3", f"Admin {node_id} missing MFA violates access control standards."),
                 ComplianceFramework.PCI_DSS: ("[Tier 1] PCI-DSS 8.3", f"Multi-factor authentication required for admin {node_id}."),
