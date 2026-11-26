@@ -254,3 +254,54 @@ flowchart TD
 | Price point | ₹15K–22K/audit | $1M+/year | $1K–3K/month | $100K+/year |
 
 ---
+
+## Deployment Stack
+
+| Layer | Service | Notes |
+|-------|---------|-------|
+| **Frontend** | Vercel (Next.js 14) | Dashboard, scan wizard, report viewer, AI widget |
+| **Backend API** | AWS Lambda (container image) + Function URL | FastAPI served through Mangum; no API Gateway, ALB, or always-on compute |
+| **Container Registry** | Amazon ECR | `authmap-backend` image repository |
+| **Graph DB** | Neo4j Aura | Attack paths, GDS algorithms, GraphRAG |
+| **Metadata DB** | Supabase PostgreSQL | Scan metadata, users, reports, AI memory |
+| **Secrets & Config** | AWS SSM Parameter Store | `/authmap/prod/*` (SecureString for secrets) |
+| **Auth** | Clerk | JWT verified by the backend on every request |
+| **LLMs** | Groq API + Hugging Face | Text inference and zero-retention vision processing |
+
+### Why Lambda
+
+The backend runs as a container-image Lambda behind a public Function URL. There is no load balancer and no always-on task, so idle cost is effectively zero — well inside the Lambda free tier (1M requests and 400K GB-seconds per month). Cold starts are ~10–60 s on the first request and milliseconds once warm. Long-running scans are dispatched asynchronously (`InvocationType=Event`) so HTTP requests return immediately; progress is persisted to Postgres and polled through `/scan/status/{scan_id}`.
+
+### Deploying the backend
+
+Prerequisites: AWS CLI v2, Docker with buildx, an ECR repository, and an IAM role that can pull the image, write CloudWatch logs, and invoke the function (for async scan jobs).
+
+```bash
+cd backend
+AWS_ACCOUNT_ID=<account-id> \
+LAMBDA_ROLE_ARN=arn:aws:iam::<account-id>:role/authmap-backend-lambda \
+ENV_FILE=./lambda-env.json \
+./deploy.sh
+```
+
+`lambda-env.json` uses Lambda's native environment shape:
+
+```json
+{
+  "Variables": {
+    "POSTGRES_URI": "postgresql://...",
+    "CLERK_JWT_ISSUER": "https://...",
+    "AUTHMAP_SECURITY_ENABLED": "true"
+  }
+}
+```
+
+Reserved runtime keys (`AWS_REGION`, `AWS_LAMBDA_FUNCTION_NAME`, …) must not be set — the deploy script strips them automatically. The script builds `backend/Dockerfile.lambda`, pushes the image to ECR, creates or updates the function, applies the environment, and ensures the public Function URL and its invoke permissions exist.
+
+Finally, point the frontend at the printed URL:
+
+```bash
+NEXT_PUBLIC_BACKEND_URL=https://<url-id>.lambda-url.ap-south-1.on.aws
+```
+
+---

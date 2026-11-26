@@ -715,8 +715,8 @@ flowchart TB
         A[AuthMap-v1.vercel.app]
     end
     
-    subgraph Backend["Backend (FastAPI + Python)"]
-        B[API Gateway]
+    subgraph Backend["Backend (FastAPI on AWS Lambda)"]
+        B[AWS Lambda<br/>Function URL + Mangum]
         C[AWSIAMScanner]
         D[GCPIAMScanner]
         E[SGTC Engine]
@@ -757,7 +757,7 @@ flowchart TB
 | Layer | Technology | Purpose |
 |-------|-----------|---------|
 | **Frontend** | Next.js 14, Tailwind CSS, Clerk Auth | Dashboard, scan initiation, report viewer, AI widget |
-| **Backend** | FastAPI, Python 3.11 | API server, orchestration, AI routing |
+| **Backend** | FastAPI, Python 3.11, AWS Lambda (container image), Mangum | API server, orchestration, AI routing, async scan jobs |
 | **Graph DB** | Neo4j Aura (Professional) | Attack path storage, GDS algorithms, GraphRAG |
 | **Metadata DB** | Supabase PostgreSQL | Scan metadata, user data, reports |
 | **Auth** | Clerk | JWT-based auth, RLS integration |
@@ -766,7 +766,7 @@ flowchart TB
 | **Client RAG** | IndexedDB, Transformers.js | Zero-footprint local vector search for compliance frameworks |
 | **ML & Security** | scikit-learn, node2vec, Presidio, RapidOCR | LOF anomaly detection, PII redactor, OCR extraction guardrails |
 | **Storage** | Supabase Storage | JSON reports, exported findings |
-| **Hosting** | Vercel (frontend), Render/Railway (backend) | Serverless deployment |
+| **Hosting** | Vercel (frontend), AWS Lambda + Function URL (backend) | Serverless, zero idle cost; scans dispatched asynchronously |
 
 ---
 
