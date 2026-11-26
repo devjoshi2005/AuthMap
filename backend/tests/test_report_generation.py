@@ -221,6 +221,7 @@ def test_templates_render_without_error(template_name):
     env.filters["wrap"] = wrap_long_id
     env.filters["yn"] = lambda v: "Yes" if v else "No"
     env.filters["humanize"] = humanize_text
+    env.filters["money_compact"] = lambda v: f"{float(v or 0) / 1_000_000:.1f}M"
 
     data = _template_data()
     html = env.from_string(getattr(reporter, template_name)).render(**data)
@@ -239,6 +240,7 @@ def test_executive_and_technical_content_are_distinct():
     env.filters["wrap"] = wrap_long_id
     env.filters["yn"] = lambda v: "Yes" if v else "No"
     env.filters["humanize"] = humanize_text
+    env.filters["money_compact"] = lambda v: f"{float(v or 0) / 1_000_000:.1f}M"
 
     data = _template_data()
     executive = env.from_string(reporter.EXECUTIVE_TEMPLATE).render(**data)
