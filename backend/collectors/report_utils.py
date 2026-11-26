@@ -158,6 +158,35 @@ def short_name(value: Any) -> str:
     return text
 
 
+_ARN_PATTERN = re.compile(r"arn:[A-Za-z0-9\-]+:[^\s,;)\]}]+")
+_TYPE_BY_SEGMENT = (
+    (":user/", "User"),
+    (":role/", "Role"),
+    (":group/", "Group"),
+    (":policy/", "Policy"),
+    (":instance-profile/", "Instance Profile"),
+    (":access-key/", "Access Key"),
+    (":mfa/", "MFA Device"),
+)
+
+
+def resource_type_from_arn(arn: Any, fallback: Any = None) -> str:
+    """Derive a readable type from the ARN itself (scanner types can be wrong)."""
+    text = str(arn or "")
+    for segment, label in _TYPE_BY_SEGMENT:
+        if segment in text:
+            return label
+    fallback_text = str(fallback or "").strip()
+    return fallback_text.title() if fallback_text else "Unknown"
+
+
+def humanize_text(text: Any, limit: int = 220) -> str:
+    """Replace raw ARNs with their short names for executive-facing copy."""
+    value = _ARN_PATTERN.sub(lambda match: short_name(match.group(0)), str(text or ""))
+    value = re.sub(r"\s+", " ", value).strip()
+    return value[:limit]
+
+
 def normalize_identity(entity: Dict[str, Any]) -> Dict[str, Any]:
     risk_factors = entity.get("static_risk_factors") or {}
     if not isinstance(risk_factors, dict):
@@ -228,9 +257,10 @@ def build_violation_groups(
     for violation in violations:
         if violation_is_noise(violation, entities_by_arn):
             continue
-        fw = str(violation.get("compliance_framework") or "SOC2")
-        rule = str(violation.get("violation_type") or "Unclassified rule")
-        key = (rule.strip().lower(), fw.strip().upper())
+        fw = normalize_framework(violation.get("compliance_framework"))
+        raw_rule = str(violation.get("violation_type") or "Unclassified rule")
+        rule = clean_control_label(raw_rule, fw)
+        key = (rule.strip().lower(), fw)
         entry = grouped.setdefault(
             key,
             {
@@ -254,7 +284,7 @@ def build_violation_groups(
             {
                 "arn": resource_arn,
                 "name": short_name(resource_arn),
-                "type": violation.get("resource_type") or entity.get("type") or "Unknown",
+                "type": resource_type_from_arn(resource_arn, violation.get("resource_type") or entity.get("type")),
                 "is_human": is_human_identity(entity) if entity else None,
                 "severity": str(violation.get("severity") or entry["severity"]).lower(),
             }
@@ -365,7 +395,7 @@ def compute_control_matrix(
                 "status": status,
                 "human_count": human,
                 "workload_count": workload,
-                "impact": impact[:220],
+                "impact": humanize_text(impact),
                 "owner": FRAMEWORK_OWNER.get(entry["framework"], FRAMEWORK_OWNER["UNSPECIFIED"]),
                 "severity": entry["severity"],
                 "count": human + workload,

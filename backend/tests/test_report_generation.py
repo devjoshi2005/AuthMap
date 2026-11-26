@@ -16,10 +16,12 @@ from collectors.report_utils import (  # noqa: E402
     build_violation_groups,
     compute_cc6_controls,
     compute_control_matrix,
-    normalize_framework,
+    humanize_text,
     is_human_identity,
     is_service_linked_identity,
+    normalize_framework,
     normalize_path,
+    resource_type_from_arn,
     short_name,
     wrap_long_id,
 )
@@ -221,6 +223,7 @@ def test_templates_render_without_error(template_name):
     env.filters["short"] = short_name
     env.filters["wrap"] = wrap_long_id
     env.filters["yn"] = lambda v: "Yes" if v else "No"
+    env.filters["humanize"] = humanize_text
 
     data = _template_data()
     html = env.from_string(getattr(reporter, template_name)).render(**data)
@@ -238,6 +241,7 @@ def test_executive_and_technical_content_are_distinct():
     env.filters["short"] = short_name
     env.filters["wrap"] = wrap_long_id
     env.filters["yn"] = lambda v: "Yes" if v else "No"
+    env.filters["humanize"] = humanize_text
 
     data = _template_data()
     executive = env.from_string(reporter.EXECUTIVE_TEMPLATE).render(**data)
@@ -263,7 +267,7 @@ def _template_data():
         "scan_id": "scan-1", "scan_name": "AWS Scan - Operator", "csp_target": "AWS",
         "audit_date": "26 Nov 2026", "aws_account_id": "123456789012",
         "total_identities": 2, "human_count": 2, "workload_count": 1,
-        "total_paths": 1, "critical_paths": 1,
+        "total_paths": 1, "critical_paths": 1, "actionable_paths": 1,
         "breakdown": {"critical": 1, "high": 0, "medium": 0, "low": 0},
         "max_risk_score": 92, "breach_cost": 250000,
         "top_3_risks": [{"title": "alice → Admin", "plain_english": "x", "severity": "CRITICAL",
@@ -373,3 +377,42 @@ def test_mfa_noise_filtered_for_historical_service_linked_rows():
     # Non-MFA findings for service-linked resources are still reported (workload risk).
     cc61 = [g for g in groups if "CC6.1" in g["violation_type"]][0]
     assert cc61["count"] == 1
+
+
+# ---------------------------------------------------------------------------
+# Executive typography: no ARN walls, correct resource typing, clean labels
+# ---------------------------------------------------------------------------
+
+def test_humanize_text_removes_arns():
+    raw = "Entity arn:aws:iam::869935106430:user/Admin_Manager violates least privilege."
+    clean = humanize_text(raw)
+    assert "arn:aws" not in clean
+    assert "Admin_Manager" in clean
+
+
+def test_resource_type_inferred_from_arn():
+    assert resource_type_from_arn("arn:aws:iam::1:policy/Foo") == "Policy"
+    assert resource_type_from_arn("arn:aws:iam::1:group/Developers") == "Group"
+    assert resource_type_from_arn("arn:aws:iam::aws:policy/AdministratorAccess") == "Policy"
+    assert resource_type_from_arn("arn:aws:iam::1:user/bob", "user") == "User"
+
+
+def test_group_labels_are_cleaned_and_merged():
+    violations = [
+        {"violation_type": "soc_2_type_ii CC6.1", "compliance_framework": "SOC2", "resource_id": "arn:a", "severity": "critical"},
+        {"violation_type": "SOC2 CC6.1", "compliance_framework": "SOC2", "resource_id": "arn:b", "severity": "high"},
+    ]
+    groups = build_violation_groups(violations)
+    assert len(groups) == 1
+    assert groups[0]["violation_type"] == "CC6.1"
+
+
+def test_fallback_is_rule_aware():
+    from collectors.authmap_reporter import _fallback_remediation
+
+    mfa = _fallback_remediation("SOC2 CC6.3", "Admin missing MFA")
+    assert "MultiFactorAuthPresent" in mfa["iam_policy_diff"]
+    over = _fallback_remediation("soc_2_type_ii CC6.1", "violates principle of least privilege")
+    assert "DenyPrivilegeEscalationActions" in over["iam_policy_diff"]
+    generic = _fallback_remediation("Unmapped framework rule", "")
+    assert "No automated policy" in generic["iam_policy_diff"]

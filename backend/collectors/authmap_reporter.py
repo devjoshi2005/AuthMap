@@ -15,6 +15,7 @@ is empty the report says so explicitly instead of printing a synthetic value.
 
 import asyncio
 import json
+import logging
 import os
 import re
 import tempfile
@@ -25,6 +26,7 @@ from collectors.report_utils import (
     build_violation_groups,
     compute_cc6_controls,
     compute_control_matrix,
+    humanize_text,
     is_human_identity,
     is_service_linked_identity,
     normalize_identity,
@@ -34,6 +36,8 @@ from collectors.report_utils import (
     short_name,
     wrap_long_id,
 )
+
+logger = logging.getLogger(__name__)
 
 MAX_TECH_PATHS = 12
 MAX_TECH_GROUPS = 12
@@ -59,9 +63,14 @@ def _iso_date(value: Any) -> str:
 def _account_id(scan: Dict[str, Any], entities: List[Dict[str, Any]]) -> str:
     config = scan.get("config") or {}
     if isinstance(config, dict):
-        for key in ("aws_account_id", "aws_role_arn", "gcp_project_id"):
-            if config.get(key):
-                return str(config[key])
+        if config.get("aws_account_id"):
+            return str(config["aws_account_id"])
+        role_arn = str(config.get("aws_role_arn") or "")
+        match = re.search(r"arn:aws:iam::(\d{12}):", role_arn)
+        if match:
+            return match.group(1)
+        if config.get("gcp_project_id"):
+            return str(config["gcp_project_id"])
     for entity in entities:
         if entity.get("aws_account_id"):
             return str(entity["aws_account_id"])
@@ -239,6 +248,7 @@ def build_executive_summary(bundle: Dict[str, Any]) -> Dict[str, Any]:
         "workload_count": bundle["workload_count"],
         "total_paths": len(paths),
         "critical_paths": len(critical),
+        "actionable_paths": breakdown["critical"] + breakdown["high"],
         "breakdown": breakdown,
         "max_risk_score": round(max_risk),
         "breach_cost": breach_cost,
@@ -304,7 +314,7 @@ thead { display: table-header-group; }
 
 <table class="kpi"><tr>
   <td><div class="v">{{ total_identities }}</div><div class="l">Identities evaluated</div><div class="meta">{{ human_count }} human · {{ workload_count }} workload</div></td>
-  <td class="crit"><div class="v">{{ critical_paths }}</div><div class="l">Critical attack paths</div><div class="meta">score ≥ 80 of {{ total_paths }} total</div></td>
+  <td class="crit"><div class="v">{{ actionable_paths }}</div><div class="l">Paths requiring action</div><div class="meta">critical {{ breakdown.critical }} · high {{ breakdown.high }} · of {{ total_paths }} total</div></td>
   <td><div class="v">{{ max_risk_score }}</div><div class="l">Max blast-radius score</div><div class="meta">0–100 hybrid risk</div></td>
   <td class="warn"><div class="v">${{ breach_cost|money }}</div><div class="l">Quantified exposure</div><div class="meta">estimated annualised loss</div></td>
 </tr></table>
@@ -345,7 +355,7 @@ thead { display: table-header-group; }
   <td><span class="badge">{{ control.status }}</span></td>
   <td>{{ control.human_count }}</td>
   <td>{{ control.workload_count }}</td>
-  <td>{{ control.impact }}</td>
+  <td>{{ control.impact|humanize }}</td>
   <td>{{ control.owner }}</td>
 </tr>
 {% endfor %}
@@ -410,6 +420,7 @@ class AuthMapExecutiveReporter:
         env.filters["money"] = lambda value: f"{float(value or 0):,.0f}"
         env.filters["short"] = short_name
         env.filters["wrap"] = wrap_long_id
+        env.filters["humanize"] = humanize_text
         template = env.from_string(EXECUTIVE_TEMPLATE)
         html = template.render(**data)
         HTML(string=html).write_pdf(output_path)
@@ -443,13 +454,13 @@ _LEAST_PRIVILEGE_POLICY = (
 )
 
 
-def _fallback_remediation(rule: str) -> Dict[str, str]:
+def _fallback_remediation(rule: str, description: str = "") -> Dict[str, str]:
     """Rule-aware, honest fallbacks used when the LLM is unavailable.
 
     These never invent resource names; they emit real, generic guardrails that
     match the rule family so every framework/rule still gets usable guidance.
     """
-    text = str(rule or "").lower()
+    text = f"{rule or ''} {description or ''}".lower()
     base = {
         "iam_policy_diff": (
             "# No automated policy was generated for this rule.\n"
@@ -515,34 +526,44 @@ async def _generate_group_remediation(
         "You are an AWS IAM remediation engineer. Return JSON only with keys "
         "iam_policy_diff, terraform_snippet, verification_cli.\n"
         f"Rule: {group['violation_type']} ({group['framework']}).\n"
+        f"Finding: {str(group.get('description') or '')[:400]}\n"
         f"Affected resources: {json.dumps(sample_arns)}\n"
         "iam_policy_diff must be a least-privilege IAM policy JSON string that removes the risky action. "
         "terraform_snippet must be valid HCL. verification_cli must be one AWS CLI command. "
         "Do not invent resource identifiers beyond those provided."
     )
+    fallback = _fallback_remediation(group["violation_type"], group.get("description", ""))
+
+    keys: List[str] = []
+    for candidate in (api_key, os.getenv("GROQ_ALTERNATE_KEY"), os.getenv("GROQ_API_KEY")):
+        if candidate and candidate not in keys:
+            keys.append(candidate)
 
     async with semaphore:
-        try:
-            client = AsyncGroq(api_key=api_key, max_retries=1, timeout=15.0)
-            response = await client.chat.completions.create(
-                model="openai/gpt-oss-20b",
-                messages=[{"role": "user", "content": prompt}],
-                response_format={"type": "json_object"},
-                temperature=0.2,
-                max_tokens=700,
-            )
-            match = re.search(r"\{.*\}", response.choices[0].message.content or "", re.DOTALL)
-            if not match:
-                return _fallback_remediation(group["violation_type"])
-            parsed = json.loads(match.group(0))
-            result = _fallback_remediation(group["violation_type"])
-            for key in ("iam_policy_diff", "terraform_snippet", "verification_cli"):
-                value = parsed.get(key)
-                if isinstance(value, str) and value.strip():
-                    result[key] = value.strip()
-            return result
-        except Exception:
-            return _fallback_remediation(group["violation_type"])
+        for key in keys:
+            try:
+                client = AsyncGroq(api_key=key, max_retries=1, timeout=20.0)
+                response = await client.chat.completions.create(
+                    model="openai/gpt-oss-20b",
+                    messages=[{"role": "user", "content": prompt}],
+                    response_format={"type": "json_object"},
+                    temperature=0.2,
+                    max_tokens=700,
+                )
+                match = re.search(r"\{.*\}", response.choices[0].message.content or "", re.DOTALL)
+                if not match:
+                    continue
+                parsed = json.loads(match.group(0))
+                result = dict(fallback)
+                for field in ("iam_policy_diff", "terraform_snippet", "verification_cli"):
+                    value = parsed.get(field)
+                    if isinstance(value, str) and value.strip():
+                        result[field] = value.strip()
+                return result
+            except Exception as exc:
+                logger.warning("Remediation LLM failed with key ending %s: %s", key[-4:], exc)
+                continue
+        return fallback
 
 
 async def build_technical_summary(scan_id: str, orchestrator=None, api_key: Optional[str] = None) -> Dict[str, Any]:
@@ -564,7 +585,12 @@ async def build_technical_summary(scan_id: str, orchestrator=None, api_key: Opti
             *[
                 _generate_group_remediation(group, api_key, semaphore)
                 if position < MAX_LLM_GROUPS
-                else asyncio.sleep(0, result=_fallback_remediation(group["violation_type"]))
+                else asyncio.sleep(
+                    0,
+                    result=_fallback_remediation(
+                        group["violation_type"], group.get("description", "")
+                    ),
+                )
                 for position, group in enumerate(groups)
             ]
         )
@@ -572,7 +598,9 @@ async def build_technical_summary(scan_id: str, orchestrator=None, api_key: Opti
             group.update(remediation or _fallback_remediation(group["violation_type"]))
     else:
         for group in groups:
-            group.update(_fallback_remediation(group["violation_type"]))
+            group.update(
+                _fallback_remediation(group["violation_type"], group.get("description", ""))
+            )
 
     human_identities = sorted(
         bundle["human"].values(), key=lambda h: (-h["risk_score"], h["name"])
