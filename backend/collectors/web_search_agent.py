@@ -27,46 +27,81 @@ class LiveWebSearchAgent:
     def __init__(self, timeout: float = 6.0):
         self.timeout = timeout
 
+    NEWS_HINTS = re.compile(
+        r"\b(latest|news|today|current|currently|recent|recently|breaking|update[sd]?|"
+        r"new\s+(law|rule|policy|regulation|draft)|amend(ed|ment)?|announce[sd]?|"
+        r"trend|roadmap|upcoming|deadline|20(2[4-9]|3[0-9])|cve-\d+|advisory|"
+        r"future|foreseeable|outlook|timeline)\b",
+        re.IGNORECASE,
+    )
+
     async def should_search_web(self, query: str) -> bool:
-        """Dynamically determines if a query requires live web search using a fast LLM."""
-        try:
-            from groq import AsyncGroq
-            client = AsyncGroq(api_key=os.getenv("GROQ_API_KEY"))
-            prompt = (
-                f"Does this query require looking up recent news, breaking CVEs, or real-time external knowledge "
-                f"that wouldn't be in a static database? Query: '{query}'\n\n"
-                f"Reply strictly with 'YES' or 'NO'."
-            )
-            resp = await client.chat.completions.create(
-                model="openai/gpt-oss-20b",
-                messages=[{"role": "user", "content": prompt}],
-                max_tokens=10,
-                temperature=0
-            )
-            content = (resp.choices[0].message.content or "").strip().upper()
-            return "YES" in content
-        except Exception as e:
-            logger.debug(f"Dynamic web search trigger fallback to false: {e}")
-            return False
+        """Fast keyword gate — no LLM round-trip (saves 1-2s per request)."""
+        return bool(self.NEWS_HINTS.search(query or ""))
+
+    _cache: Dict[str, tuple] = {}
+    _CACHE_TTL = 600.0
 
     async def search(self, query: str, max_results: int = 4) -> List[Dict[str, str]]:
-        """Performs a lightweight, real-time search with zero dependencies on paid APIs and strict SSRF filtering."""
-        results = []
+        """Live search with cache: Google News RSS first, DuckDuckGo HTML fallback."""
+        import time
         clean_q = normalize_and_clean_input(query)
+        cache_key = clean_q.strip().lower()
+        cached = self._cache.get(cache_key)
+        if cached and (time.time() - cached[1]) < self._CACHE_TTL:
+            return cached[0]
+
+        results: List[Dict[str, str]] = []
         try:
-            # DuckDuckGo HTML search endpoint
-            encoded_query = httpx.URL("", params={"q": clean_q}).query.decode("utf-8")
-            url = f"https://html.duckduckgo.com/html/?{encoded_query}"
-
             async with httpx.AsyncClient(headers=SEARCH_HEADERS, timeout=self.timeout, follow_redirects=True) as client:
-                resp = await client.get(url)
-                if resp.status_code == 200:
-                    results = self._parse_ddg_html(resp.text, max_results)
-
+                results = await self._search_google_news(client, clean_q, max_results)
+                if not results:
+                    results = await self._search_duckduckgo(client, clean_q, max_results)
         except Exception as e:
             logger.warning(f"Live web search failed for query '{clean_q}': {e}")
 
+        if results:
+            self._cache[cache_key] = (results, time.time())
         return results
+
+    async def _search_google_news(self, client, query: str, max_results: int) -> List[Dict[str, str]]:
+        """Google News RSS: reliable from data centres, no API key."""
+        import xml.etree.ElementTree as ET
+        resp = await client.get(
+            "https://news.google.com/rss/search",
+            params={"q": query, "hl": "en-IN", "gl": "IN", "ceid": "IN:en"},
+        )
+        if resp.status_code != 200:
+            return []
+        out = []
+        try:
+            root = ET.fromstring(resp.text)
+        except ET.ParseError:
+            return []
+        for item in root.iter("item"):
+            title = (item.findtext("title") or "").strip()
+            link = (item.findtext("link") or "").strip()
+            pub = (item.findtext("pubDate") or "").strip()
+            source_el = item.find("source")
+            source = (source_el.text.strip() if source_el is not None and source_el.text else "")
+            if not title:
+                continue
+            snippet = " — ".join(x for x in [source, pub] if x)
+            out.append({
+                "title": sanitize_web_snippet(title)[:200],
+                "snippet": sanitize_web_snippet(snippet)[:240],
+                "url": link if validate_web_url_safety(link) else "",
+            })
+            if len(out) >= max_results:
+                break
+        return out
+
+    async def _search_duckduckgo(self, client, query: str, max_results: int) -> List[Dict[str, str]]:
+        encoded_query = httpx.URL("", params={"q": query}).query.decode("utf-8")
+        resp = await client.get(f"https://html.duckduckgo.com/html/?{encoded_query}")
+        if resp.status_code == 200:
+            return self._parse_ddg_html(resp.text, max_results)
+        return []
 
     def _parse_ddg_html(self, html_text: str, max_results: int) -> List[Dict[str, str]]:
         """Parses search snippets and URLs using standard BeautifulSoup HTML parser with SSRF & nh3 XSS sanitization."""

@@ -302,16 +302,20 @@ class AuthMapAIAssistant:
                 return await self._fetch_graph_context(clean_user_query, scan_id)
             return None, []
 
-        try:
-            results = await asyncio.wait_for(
-                asyncio.gather(fetch_web(), fetch_graph(), return_exceptions=True),
-                timeout=4.0
-            )
-            web_results = results[0] if isinstance(results[0], list) else []
-            executed_cypher, graph_data_res = results[1] if isinstance(results[1], tuple) else (None, [])
-        except Exception as e:
-            logger.warning(f"Parallel retrieval timed out or failed: {e}")
-            web_results, executed_cypher, graph_data_res = [], None, []
+        async def with_timeout(coro, seconds):
+            """Independent timeouts: a slow web search must never discard graph RAG."""
+            try:
+                return await asyncio.wait_for(coro, timeout=seconds)
+            except Exception as e:
+                logger.warning(f"Retrieval source skipped after {seconds}s: {e}")
+                return None
+
+        web_res, graph_res = await asyncio.gather(
+            with_timeout(fetch_web(), 6.0),
+            with_timeout(fetch_graph(), 4.0),
+        )
+        web_results = web_res if isinstance(web_res, list) else []
+        executed_cypher, graph_data_res = graph_res if isinstance(graph_res, tuple) else (None, [])
 
         context_parts = []
 
@@ -402,7 +406,7 @@ class AuthMapAIAssistant:
 
         # 4. Live Web Threat Intelligence (if any, top 2 results)
         if web_results:
-            web_text = "\n".join([f"- **{r['title']}**: {r['snippet'][:180]} [Source]({r.get('url', '')})" for r in web_results[:2]])
+            web_text = "\n".join([f"- **{r['title']}**: {r['snippet'][:180]} [Source]({r.get('url', '')})" for r in web_results[:3]])
             context_parts.append(armor_context_block("untrusted_web_intelligence", web_text, {"source": "live_web_feed"}))
 
         combined_context = "\n\n".join(context_parts)
@@ -413,6 +417,7 @@ CONTEXT & FACTS:
 {combined_context}
 
 CRITICAL DUAL-ENGINE RETRIEVAL & RESPONSE GUIDELINES:
+- **Live Web Intelligence (current events)**: If the `<untrusted_web_intelligence>` block below is non-empty, it contains real, current external facts (news, regulatory updates, advisories). Use it directly to answer questions about recent developments, cite the source link, and NEVER reply that you cannot access current news when those entries exist. If the block is empty and the question genuinely needs live data, say you could not retrieve live sources right now.
 1. **Supabase RAG First for Scan Details, Inputs & Compliance**:
    - Whenever the user asks about scan details, chosen wizard options, compliance goals, compliance audit status, violation counts, or financial risk benchmarks:
      * **ALWAYS retrieve and rely on the SUPABASE SOURCE OF TRUTH first**.
